@@ -1,0 +1,6 @@
+{
+  "name": "CacaoFlow — ระบบจัดการสต๊อกโรงงานแปรรูปโกโก้",
+  "description": "ระบบบริหารสต๊อกรับซื้อผลสด แปรรูปหมักตาก คัดเกรด A/B/C บันทึก Bulk สูญเสีย จ่ายสินค้าออก และวิเคราะห์กำไรขาดทุนรายรอบแบบเรียลไทม์",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
