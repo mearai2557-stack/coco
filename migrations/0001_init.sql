@@ -7,11 +7,12 @@ CREATE TABLE IF NOT EXISTS stock_state (
   fresh_stock_value REAL NOT NULL DEFAULT 0,
   wet_stock_kg REAL NOT NULL DEFAULT 0,
   wet_stock_value REAL NOT NULL DEFAULT 0,
+  skip_sample_seed INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO stock_state (id, fresh_stock_kg, fresh_stock_value, wet_stock_kg, wet_stock_value, updated_at)
-VALUES (1, 0, 0, 0, 0, datetime('now'));
+INSERT OR IGNORE INTO stock_state (id, fresh_stock_kg, fresh_stock_value, wet_stock_kg, wet_stock_value, skip_sample_seed, updated_at)
+VALUES (1, 0, 0, 0, 0, 0, datetime('now'));
 
 CREATE TABLE IF NOT EXISTS farmers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

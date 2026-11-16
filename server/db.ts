@@ -69,13 +69,20 @@ function upgradeExistingSchemaIfNeeded(): void {
   // Add wet_stock columns & raw_type columns safely for existing DBs
   if (!hasColumn('stock_state', 'wet_stock_kg')) {
     db.exec('ALTER TABLE stock_state ADD COLUMN wet_stock_kg REAL NOT NULL DEFAULT 0');
+  }
+  if (!hasColumn('stock_state', 'wet_stock_value')) {
     db.exec('ALTER TABLE stock_state ADD COLUMN wet_stock_value REAL NOT NULL DEFAULT 0');
+  }
+  if (!hasColumn('stock_state', 'skip_sample_seed')) {
+    db.exec('ALTER TABLE stock_state ADD COLUMN skip_sample_seed INTEGER NOT NULL DEFAULT 0');
   }
   if (!hasColumn('fresh_purchases', 'raw_type')) {
     db.exec("ALTER TABLE fresh_purchases ADD COLUMN raw_type TEXT NOT NULL DEFAULT 'POD'");
   }
   if (!hasColumn('processing_batches', 'wet_purchased_used_kg')) {
     db.exec('ALTER TABLE processing_batches ADD COLUMN wet_purchased_used_kg REAL NOT NULL DEFAULT 0');
+  }
+  if (!hasColumn('processing_batches', 'wet_cost_allocated')) {
     db.exec('ALTER TABLE processing_batches ADD COLUMN wet_cost_allocated REAL NOT NULL DEFAULT 0');
   }
 
@@ -192,6 +199,11 @@ function getRawStockState(): {
 }
 
 function seedInitialDataIfEmpty(): void {
+  const stateRow = db
+    .prepare('SELECT skip_sample_seed FROM stock_state WHERE id = 1')
+    .get() as { skip_sample_seed?: number } | undefined;
+  if (stateRow?.skip_sample_seed === 1) return;
+
   const farmerCount = (db.prepare('SELECT COUNT(*) as cnt FROM farmers').get() as { cnt: number }).cnt;
   if (farmerCount > 0) return;
 
@@ -1140,4 +1152,31 @@ export function getDashboardSummary(): DashboardSummary {
 
 function gpValue(v: number): number {
   return v;
+}
+
+export function resetAllData(options?: { keepFarmers?: boolean }): void {
+  const keepFarmers = Boolean(options?.keepFarmers);
+  const updatedAt = nowIso();
+  withTransaction(() => {
+    db.exec(`
+      DELETE FROM stock_ledger;
+      DELETE FROM sales_dispatches;
+      DELETE FROM batch_grade_stock;
+      DELETE FROM processing_batches;
+      DELETE FROM fresh_purchases;
+    `);
+    if (!keepFarmers) {
+      db.exec('DELETE FROM farmers;');
+    }
+    db.prepare(
+      `UPDATE stock_state
+       SET fresh_stock_kg = 0,
+           fresh_stock_value = 0,
+           wet_stock_kg = 0,
+           wet_stock_value = 0,
+           skip_sample_seed = 1,
+           updated_at = ?
+       WHERE id = 1`
+    ).run(updatedAt);
+  });
 }

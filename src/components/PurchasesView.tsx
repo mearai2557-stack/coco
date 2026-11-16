@@ -270,20 +270,37 @@ export function PurchasesView({
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-[#57534E] mb-1">
-              รายชื่อเกษตรกรผู้ส่งสินค้า
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-medium text-[#57534E]">
+                รายชื่อเกษตรกรผู้ส่งสินค้า
+              </label>
+              {farmers.length === 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAddFarmer(true)}
+                  className="text-xs font-semibold text-[#9A4A18] hover:underline"
+                >
+                  + เพิ่มเกษตรกรก่อน
+                </button>
+              )}
+            </div>
             <select
               required
-              value={selectedFarmerId}
+              value={selectedFarmerId || ''}
               onChange={(e) => setFarmerId(Number(e.target.value))}
               className="w-full min-h-[44px] px-3 rounded-lg border border-[#E5E5E0] bg-[#FAFAF8] text-sm focus:outline-none focus:border-[#9A4A18]"
             >
-              {farmers.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
+              {farmers.length === 0 ? (
+                <option value="" disabled>
+                  -- ยังไม่มีรายชื่อ กดปุ่ม "เพิ่มรายชื่อเกษตรกร" ด้านบน --
                 </option>
-              ))}
+              ) : (
+                farmers.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))
+              )}
             </select>
           </div>
 

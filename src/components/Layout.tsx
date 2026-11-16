@@ -1,10 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
+  AlertTriangle,
   BarChart3,
   ClipboardList,
   Factory,
   History,
   RefreshCw,
+  RotateCcw,
   Scale,
   Truck,
 } from 'lucide-react';
@@ -19,6 +21,7 @@ interface LayoutProps {
   summary: DashboardSummary | null;
   loading: boolean;
   onRefresh: () => void;
+  onResetData: (options: { keepFarmers: boolean }) => Promise<void>;
   primaryActionLabel?: string;
   onPrimaryAction?: () => void;
   children: React.ReactNode;
@@ -51,10 +54,33 @@ export function Layout({
   summary,
   loading,
   onRefresh,
+  onResetData,
   primaryActionLabel,
   onPrimaryAction,
   children,
 }: LayoutProps) {
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [keepFarmers, setKeepFarmers] = useState(false);
+  const [confirmChecked, setConfirmChecked] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  const openResetModal = () => {
+    setKeepFarmers(false);
+    setConfirmChecked(false);
+    setShowResetModal(true);
+  };
+
+  const handleConfirmReset = async () => {
+    if (!confirmChecked || resetting) return;
+    setResetting(true);
+    try {
+      await onResetData({ keepFarmers });
+      setShowResetModal(false);
+    } finally {
+      setResetting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#FAFAF8] text-[#1C1917] flex flex-col lg:flex-row">
       {/* Desktop Left Sidebar */}
@@ -136,6 +162,14 @@ export function Layout({
                 </span>
               </div>
             </div>
+            <button
+              type="button"
+              onClick={openResetModal}
+              className="w-full min-h-[40px] mt-1 px-3 py-2 rounded-lg border border-[#E5E5E0] bg-white hover:border-[#DC2626]/50 hover:bg-[#FEF2F2] text-xs font-medium text-[#57534E] hover:text-[#991B1B] transition-colors flex items-center justify-center gap-1.5"
+            >
+              <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+              <span>ล้างข้อมูลเริ่มบันทึกจริง</span>
+            </button>
           </div>
         )}
       </aside>
@@ -155,6 +189,15 @@ export function Layout({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={openResetModal}
+              title="ล้างข้อมูลเพื่อเริ่มบันทึกจริง"
+              aria-label="ล้างข้อมูลเพื่อเริ่มบันทึกจริง"
+              className="lg:hidden min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg border border-[#E5E5E0] bg-white text-[#57534E] hover:text-[#991B1B] hover:border-[#FECACA] hover:bg-[#FEF2F2] transition-colors"
+            >
+              <RotateCcw className="w-4 h-4" />
+            </button>
             <button
               type="button"
               onClick={onRefresh}
@@ -210,6 +253,93 @@ export function Layout({
           })}
         </div>
       </nav>
+
+      {/* Reset Data Confirmation Modal */}
+      {showResetModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="reset-modal-title"
+          className="fixed inset-0 z-50 bg-[#1C1917]/50 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-md bg-white border border-[#E5E5E0] rounded-2xl p-6 shadow-xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-[#FEF2F2] text-[#DC2626] flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 id="reset-modal-title" className="text-base font-bold text-[#1C1917]">
+                  ล้างข้อมูลเพื่อเริ่มลงบันทึกจริง
+                </h2>
+                <p className="text-xs text-[#57534E] mt-1 leading-relaxed">
+                  ระบบจะลบข้อมูลตัวอย่างและรายการทดสอบทั้งหมด (สต๊อกผลสด, เมล็ดสด, การรับซื้อ, รอบหมัก-ตาก, สต๊อกเกรด A/B/C/Bulk, การขาย และประวัติย้อนหลัง) ให้กลับเป็น 0 และไม่สร้างข้อมูลตัวอย่างซ้ำอีก
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <label className="flex items-start gap-3 p-3 rounded-xl border border-[#E5E5E0] bg-[#FAFAF8] cursor-pointer">
+                <input
+                  type="radio"
+                  name="resetScope"
+                  checked={!keepFarmers}
+                  onChange={() => setKeepFarmers(false)}
+                  className="mt-0.5 accent-[#9A4A18]"
+                />
+                <div className="text-xs">
+                  <div className="font-semibold text-[#1C1917]">ล้างข้อมูลทั้งหมด 100% (รวมรายชื่อเกษตรกร)</div>
+                  <div className="text-[#57534E] mt-0.5">เหมาะสำหรับเริ่มระบบใหม่จากศูนย์ทั้งหมด</div>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-3 p-3 rounded-xl border border-[#E5E5E0] bg-[#FAFAF8] cursor-pointer">
+                <input
+                  type="radio"
+                  name="resetScope"
+                  checked={keepFarmers}
+                  onChange={() => setKeepFarmers(true)}
+                  className="mt-0.5 accent-[#9A4A18]"
+                />
+                <div className="text-xs">
+                  <div className="font-semibold text-[#1C1917]">ล้างเฉพาะสต๊อกและรายการ (เก็บรายชื่อเกษตรกรไว้)</div>
+                  <div className="text-[#57534E] mt-0.5">หากคุณลงทะเบียนรายชื่อเกษตรกรจริงไว้แล้ว</div>
+                </div>
+              </label>
+            </div>
+
+            <label className="flex items-center gap-2.5 p-3 rounded-xl bg-[#FEF2F2] border border-[#FECACA] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={confirmChecked}
+                onChange={(e) => setConfirmChecked(e.target.checked)}
+                className="w-4 h-4 accent-[#DC2626] shrink-0"
+              />
+              <span className="text-xs font-medium text-[#991B1B]">
+                ฉันเข้าใจว่าการล้างข้อมูลไม่สามารถย้อนกลับได้ และต้องการเริ่มบันทึกจริง
+              </span>
+            </label>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                disabled={resetting}
+                onClick={() => setShowResetModal(false)}
+                className="min-h-[44px] px-4 py-2 rounded-lg border border-[#E5E5E0] bg-white hover:bg-[#F3F3EE] text-sm font-medium text-[#57534E] disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                disabled={!confirmChecked || resetting}
+                onClick={handleConfirmReset}
+                className="min-h-[44px] px-4 py-2 rounded-lg bg-[#DC2626] hover:bg-[#B91C1C] text-white text-sm font-semibold disabled:opacity-40 transition-colors"
+              >
+                {resetting ? 'กำลังล้างข้อมูล...' : 'ยืนยันล้างข้อมูล'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

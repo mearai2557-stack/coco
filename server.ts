@@ -17,6 +17,7 @@ import {
   listLedger,
   listPurchases,
   listSales,
+  resetAllData,
   startBatch,
 } from './server/db.ts';
 
@@ -156,6 +157,16 @@ app.get('/api/ledger', (req, res) => {
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
+});
+
+app.post('/api/reset', (req, res) => {
+  try {
+    const keepFarmers = Boolean(req.body?.keepFarmers);
+    resetAllData({ keepFarmers });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 async function startServer(): Promise<void> {

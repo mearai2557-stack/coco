@@ -218,6 +218,21 @@ export default function App() {
     }
   };
 
+  const handleResetData = async (options: { keepFarmers: boolean }) => {
+    try {
+      await apiJson<{ ok: boolean }>('/api/reset', {
+        method: 'POST',
+        body: JSON.stringify(options),
+      });
+      await loadAllData();
+      setActiveTab('dashboard');
+      showToast('success', 'ล้างข้อมูลเรียบร้อยแล้ว พร้อมเริ่มบันทึกรายการจริง');
+    } catch (err) {
+      showToast('error', (err as Error).message);
+      throw err;
+    }
+  };
+
   const quickHeaderCta: Record<NavTab, { label: string; target: NavTab } | undefined> = {
     dashboard: { label: 'รับซื้อผลสด', target: 'purchases' },
     purchases: { label: 'เข้าหมักแปรรูป', target: 'processing' },
@@ -235,6 +250,7 @@ export default function App() {
       summary={summary}
       loading={loading}
       onRefresh={loadAllData}
+      onResetData={handleResetData}
       primaryActionLabel={cta?.label}
       onPrimaryAction={cta ? () => setActiveTab(cta.target) : undefined}
     >

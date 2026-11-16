@@ -41,10 +41,9 @@ const DDL_STATEMENTS = [
     fresh_stock_value REAL NOT NULL DEFAULT 0,
     wet_stock_kg REAL NOT NULL DEFAULT 0,
     wet_stock_value REAL NOT NULL DEFAULT 0,
+    skip_sample_seed INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
   )`,
-  `INSERT OR IGNORE INTO stock_state (id, fresh_stock_kg, fresh_stock_value, wet_stock_kg, wet_stock_value, updated_at)
-   VALUES (1, 0, 0, 0, 0, datetime('now'))`,
   `CREATE TABLE IF NOT EXISTS farmers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -124,6 +123,10 @@ const DDL_STATEMENTS = [
     notes TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_purchases_date ON fresh_purchases(scheduled_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_batches_status ON processing_batches(status)`,
+  `CREATE INDEX IF NOT EXISTS idx_sales_date ON sales_dispatches(dispatch_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_ledger_date ON stock_ledger(tx_date, id)`,
 ];
 
 let schemaReady = false;
@@ -151,23 +154,88 @@ async function hasColumnD1(db: D1Database, tableName: string, colName: string): 
 async function ensureSchemaAndSeed(db: D1Database): Promise<void> {
   if (!schemaReady) {
     await db.batch(DDL_STATEMENTS.map((sql) => db.prepare(sql)));
+
     if (!(await hasColumnD1(db, 'stock_state', 'wet_stock_kg'))) {
-      await db.batch([
-        db.prepare('ALTER TABLE stock_state ADD COLUMN wet_stock_kg REAL NOT NULL DEFAULT 0'),
-        db.prepare('ALTER TABLE stock_state ADD COLUMN wet_stock_value REAL NOT NULL DEFAULT 0'),
-      ]);
+      await db.prepare('ALTER TABLE stock_state ADD COLUMN wet_stock_kg REAL NOT NULL DEFAULT 0').run();
+    }
+    if (!(await hasColumnD1(db, 'stock_state', 'wet_stock_value'))) {
+      await db.prepare('ALTER TABLE stock_state ADD COLUMN wet_stock_value REAL NOT NULL DEFAULT 0').run();
+    }
+    if (!(await hasColumnD1(db, 'stock_state', 'skip_sample_seed'))) {
+      await db.prepare('ALTER TABLE stock_state ADD COLUMN skip_sample_seed INTEGER NOT NULL DEFAULT 0').run();
     }
     if (!(await hasColumnD1(db, 'fresh_purchases', 'raw_type'))) {
       await db.prepare("ALTER TABLE fresh_purchases ADD COLUMN raw_type TEXT NOT NULL DEFAULT 'POD'").run();
     }
     if (!(await hasColumnD1(db, 'processing_batches', 'wet_purchased_used_kg'))) {
-      await db.batch([
-        db.prepare('ALTER TABLE processing_batches ADD COLUMN wet_purchased_used_kg REAL NOT NULL DEFAULT 0'),
-        db.prepare('ALTER TABLE processing_batches ADD COLUMN wet_cost_allocated REAL NOT NULL DEFAULT 0'),
-      ]);
+      await db.prepare('ALTER TABLE processing_batches ADD COLUMN wet_purchased_used_kg REAL NOT NULL DEFAULT 0').run();
     }
+    if (!(await hasColumnD1(db, 'processing_batches', 'wet_cost_allocated'))) {
+      await db.prepare('ALTER TABLE processing_batches ADD COLUMN wet_cost_allocated REAL NOT NULL DEFAULT 0').run();
+    }
+
+    const bgsRow = await db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='batch_grade_stock'")
+      .first<{ sql: string }>();
+
+    if (bgsRow && !bgsRow.sql.includes("'BULK'")) {
+      await db.prepare('PRAGMA foreign_keys = OFF').run();
+      await db.batch([
+        db.prepare(`
+          CREATE TABLE batch_grade_stock_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id INTEGER NOT NULL,
+            grade TEXT NOT NULL CHECK (grade IN ('A', 'B', 'C', 'BULK')),
+            initial_kg REAL NOT NULL,
+            remaining_kg REAL NOT NULL,
+            cost_per_kg REAL NOT NULL,
+            FOREIGN KEY (batch_id) REFERENCES processing_batches(id)
+          )
+        `),
+        db.prepare(`
+          INSERT INTO batch_grade_stock_new (id, batch_id, grade, initial_kg, remaining_kg, cost_per_kg)
+          SELECT id, batch_id, grade, initial_kg, remaining_kg, cost_per_kg FROM batch_grade_stock
+        `),
+        db.prepare('DROP TABLE batch_grade_stock'),
+        db.prepare('ALTER TABLE batch_grade_stock_new RENAME TO batch_grade_stock'),
+        db.prepare(`
+          CREATE TABLE sales_dispatches_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dispatch_code TEXT NOT NULL UNIQUE,
+            dispatch_date TEXT NOT NULL,
+            customer_name TEXT NOT NULL,
+            grade TEXT NOT NULL CHECK (grade IN ('A', 'B', 'C', 'BULK')),
+            weight_kg REAL NOT NULL,
+            price_per_kg REAL NOT NULL,
+            total_revenue REAL NOT NULL,
+            cogs_total REAL NOT NULL,
+            gross_profit REAL NOT NULL,
+            batch_allocations_json TEXT NOT NULL,
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+          )
+        `),
+        db.prepare('INSERT INTO sales_dispatches_new SELECT * FROM sales_dispatches'),
+        db.prepare('DROP TABLE sales_dispatches'),
+        db.prepare('ALTER TABLE sales_dispatches_new RENAME TO sales_dispatches'),
+      ]);
+      await db.prepare('PRAGMA foreign_keys = ON').run();
+    }
+
+    await db
+      .prepare(
+        `INSERT OR IGNORE INTO stock_state (id, fresh_stock_kg, fresh_stock_value, wet_stock_kg, wet_stock_value, skip_sample_seed, updated_at)
+         VALUES (1, 0, 0, 0, 0, 0, datetime('now'))`
+      )
+      .run();
+
     schemaReady = true;
   }
+
+  const stateRow = await db
+    .prepare('SELECT skip_sample_seed FROM stock_state WHERE id = 1')
+    .first<{ skip_sample_seed?: number }>();
+  if (stateRow?.skip_sample_seed === 1) return;
 
   const row = await db.prepare('SELECT COUNT(*) as cnt FROM farmers').first<{ cnt: number }>();
   if ((row?.cnt ?? 0) === 0) {
@@ -1231,6 +1299,36 @@ async function getDashboardSummary(db: D1Database): Promise<DashboardSummary> {
   };
 }
 
+async function resetAllData(db: D1Database, options?: { keepFarmers?: boolean }): Promise<void> {
+  const keepFarmers = Boolean(options?.keepFarmers);
+  const updatedAt = nowIso();
+  const stmts: D1PreparedStatement[] = [
+    db.prepare('DELETE FROM stock_ledger'),
+    db.prepare('DELETE FROM sales_dispatches'),
+    db.prepare('DELETE FROM batch_grade_stock'),
+    db.prepare('DELETE FROM processing_batches'),
+    db.prepare('DELETE FROM fresh_purchases'),
+  ];
+  if (!keepFarmers) {
+    stmts.push(db.prepare('DELETE FROM farmers'));
+  }
+  stmts.push(
+    db
+      .prepare(
+        `UPDATE stock_state
+         SET fresh_stock_kg = 0,
+             fresh_stock_value = 0,
+             wet_stock_kg = 0,
+             wet_stock_value = 0,
+             skip_sample_seed = 1,
+             updated_at = ?
+         WHERE id = 1`
+      )
+      .bind(updatedAt)
+  );
+  await db.batch(stmts);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -1341,6 +1439,11 @@ export default {
             to: searchParams.get('to') || undefined,
           })
         );
+      }
+      if (pathname === '/api/reset' && method === 'POST') {
+        const body = (await request.json().catch(() => ({}))) as { keepFarmers?: boolean };
+        await resetAllData(env.DB, { keepFarmers: Boolean(body?.keepFarmers) });
+        return json({ ok: true });
       }
 
       return json({ error: 'ไม่พบ API Endpoint ที่เรียกใช้งาน' }, 404);
