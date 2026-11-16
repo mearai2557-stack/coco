@@ -152,11 +152,17 @@ app.get('/api/ledger', (req, res) => {
   }
 });
 
-async function startServer(): Promise<void> {
-  const isProd = process.env.NODE_ENV === 'production';
-  const distDir = path.resolve(process.cwd(), 'dist');
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true });
+});
 
-  if (!isProd || !fs.existsSync(distDir)) {
+async function startServer(): Promise<void> {
+  const isDevLifecycle = process.env.npm_lifecycle_event === 'dev' || process.env.NODE_ENV === 'development';
+  const isProdEnv = process.env.NODE_ENV === 'production' || Boolean(process.env.K_SERVICE);
+  const distDir = path.resolve(process.cwd(), 'dist');
+  const shouldServeBuiltDist = fs.existsSync(distDir) && (isProdEnv || !isDevLifecycle);
+
+  if (!shouldServeBuiltDist) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },

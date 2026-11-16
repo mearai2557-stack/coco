@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
@@ -15,13 +16,26 @@ import type {
   StockLedgerEntry,
 } from '../src/types.ts';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+function resolveWritableDataDir(): string {
+  const preferred = path.resolve(process.cwd(), 'data');
+  try {
+    if (!fs.existsSync(preferred)) {
+      fs.mkdirSync(preferred, { recursive: true });
+    }
+    fs.accessSync(preferred, fs.constants.W_OK);
+    return preferred;
+  } catch {
+    const fallback = path.join(os.tmpdir(), 'cacaoflow-data');
+    if (!fs.existsSync(fallback)) {
+      fs.mkdirSync(fallback, { recursive: true });
+    }
+    return fallback;
+  }
+}
+
+const DATA_DIR = resolveWritableDataDir();
 const DB_PATH = path.join(DATA_DIR, 'cacao.db');
 const MIGRATION_PATH = path.resolve(process.cwd(), 'migrations', '0001_init.sql');
-
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
 
 export const db = new DatabaseSync(DB_PATH);
 
