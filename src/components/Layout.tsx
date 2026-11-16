@@ -31,7 +31,7 @@ const NAV_ITEMS: Array<{
   icon: React.ComponentType<{ className?: string }>;
 }> = [
   { id: 'dashboard', label: 'ภาพรวม & กำไรขาดทุน', mobileLabel: 'ภาพรวม', icon: BarChart3 },
-  { id: 'purchases', label: 'รับซื้อผลสด', mobileLabel: 'รับผลสด', icon: Scale },
+  { id: 'purchases', label: 'รับซื้อผลสด & เมล็ดสด', mobileLabel: 'รับซื้อ', icon: Scale },
   { id: 'processing', label: 'แปรรูป & หมักตาก', mobileLabel: 'แปรรูป', icon: Factory },
   { id: 'sales', label: 'จ่ายสินค้าออก', mobileLabel: 'ขายออก', icon: Truck },
   { id: 'ledger', label: 'ประวัติรายการ', mobileLabel: 'ประวัติ', icon: History },
@@ -39,8 +39,8 @@ const NAV_ITEMS: Array<{
 
 const TAB_TITLES: Record<NavTab, string> = {
   dashboard: 'ภาพรวมคลังสินค้าและกำไรขาดทุนรายรอบ',
-  purchases: 'รับซื้อผลโกโก้สดแยกตามเกษตรกร',
-  processing: 'แปรรูปผลสด · หมัก · ตากแห้ง & คัดเกรด A/B/C',
+  purchases: 'รับซื้อผลโกโก้สด & เมล็ดโกโก้สดแยกตามเกษตรกร',
+  processing: 'แปรรูปผลสด · เมล็ดสด · หมัก · ตากแห้ง & คัดเกรด',
   sales: 'จ่ายสินค้าออกจำหน่ายและตัดสต๊อก',
   ledger: 'ประวัติการเคลื่อนไหวสต๊อกย้อนหลังทั้งหมด',
 };
@@ -102,9 +102,15 @@ export function Layout({
             <div className="text-xs font-semibold text-[#57534E]">สต๊อกคงเหลือปัจจุบัน</div>
             <div className="space-y-1.5 text-xs">
               <div className="flex items-center justify-between">
-                <span className="text-[#57534E]">ผลสดรอแปรรูป</span>
+                <span className="text-[#57534E]">ผลสดรอแกะ</span>
                 <span className="font-mono tabular-nums font-medium text-[#1C1917]">
                   {formatKg(summary.fresh_stock_kg)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[#57534E]">เมล็ดสดรอหมัก</span>
+                <span className="font-mono tabular-nums font-medium text-[#1C1917]">
+                  {formatKg(summary.wet_stock_kg)}
                 </span>
               </div>
               <div className="flex items-center justify-between">

@@ -5,11 +5,13 @@ CREATE TABLE IF NOT EXISTS stock_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   fresh_stock_kg REAL NOT NULL DEFAULT 0,
   fresh_stock_value REAL NOT NULL DEFAULT 0,
+  wet_stock_kg REAL NOT NULL DEFAULT 0,
+  wet_stock_value REAL NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
 
-INSERT OR IGNORE INTO stock_state (id, fresh_stock_kg, fresh_stock_value, updated_at)
-VALUES (1, 0, 0, datetime('now'));
+INSERT OR IGNORE INTO stock_state (id, fresh_stock_kg, fresh_stock_value, wet_stock_kg, wet_stock_value, updated_at)
+VALUES (1, 0, 0, 0, 0, datetime('now'));
 
 CREATE TABLE IF NOT EXISTS farmers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -24,6 +26,7 @@ CREATE TABLE IF NOT EXISTS fresh_purchases (
   purchase_code TEXT NOT NULL UNIQUE,
   scheduled_date TEXT NOT NULL,
   farmer_id INTEGER NOT NULL,
+  raw_type TEXT NOT NULL DEFAULT 'POD' CHECK (raw_type IN ('POD', 'WET_BEAN')),
   weight_kg REAL NOT NULL,
   price_per_kg REAL NOT NULL,
   total_cost REAL NOT NULL,
@@ -38,8 +41,10 @@ CREATE TABLE IF NOT EXISTS processing_batches (
   started_date TEXT NOT NULL,
   completed_date TEXT,
   status TEXT NOT NULL CHECK (status IN ('fermenting', 'completed')),
-  fresh_used_kg REAL NOT NULL,
-  fresh_cost_allocated REAL NOT NULL,
+  fresh_used_kg REAL NOT NULL DEFAULT 0,
+  fresh_cost_allocated REAL NOT NULL DEFAULT 0,
+  wet_purchased_used_kg REAL NOT NULL DEFAULT 0,
+  wet_cost_allocated REAL NOT NULL DEFAULT 0,
   wet_bean_kg REAL NOT NULL,
   processing_expense REAL NOT NULL DEFAULT 0,
   bulk_loss_kg REAL NOT NULL DEFAULT 0,

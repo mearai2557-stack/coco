@@ -13,6 +13,7 @@ import type {
   Farmer,
   FreshPurchase,
   ProcessingBatch,
+  RawMaterialType,
   SalesDispatch,
   StockLedgerEntry,
 } from './types';
@@ -109,6 +110,7 @@ export default function App() {
   const handleCreatePurchase = async (data: {
     scheduledDate: string;
     farmerId: number;
+    rawType: RawMaterialType;
     weightKg: number;
     pricePerKg: number;
     notes: string;
@@ -119,7 +121,8 @@ export default function App() {
         body: JSON.stringify(data),
       });
       await loadAllData();
-      showToast('success', `บันทึกรับซื้อผลสด ${created.purchase_code} (+${created.weight_kg} กก.)`);
+      const label = created.raw_type === 'WET_BEAN' ? 'เมล็ดสด' : 'ผลสด';
+      showToast('success', `บันทึกรับซื้อ${label} ${created.purchase_code} (+${created.weight_kg} กก.)`);
     } catch (err) {
       showToast('error', (err as Error).message);
       throw err;
@@ -139,6 +142,7 @@ export default function App() {
   const handleStartBatch = async (data: {
     startedDate: string;
     freshUsedKg: number;
+    wetPurchasedUsedKg: number;
     wetBeanKg: number;
     processingExpense: number;
     notes: string;
@@ -149,7 +153,7 @@ export default function App() {
         body: JSON.stringify(data),
       });
       await loadAllData();
-      showToast('success', `เปิดรอบหมัก ${created.batch_code} และตัดสต๊อกผลสดเรียบร้อยแล้ว`);
+      showToast('success', `เปิดรอบหมัก ${created.batch_code} และตัดสต๊อกวัตถุดิบเรียบร้อยแล้ว`);
     } catch (err) {
       showToast('error', (err as Error).message);
       throw err;

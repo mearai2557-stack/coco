@@ -21,7 +21,10 @@ export function DashboardView({ summary, onNavigate }: DashboardViewProps) {
   const isProfit = netProfit >= 0;
 
   const totalInventoryValue =
-    summary.fresh_stock_value + summary.fermenting_cost_value + summary.total_dried_stock_value;
+    summary.fresh_stock_value +
+    summary.wet_stock_value +
+    summary.fermenting_cost_value +
+    summary.total_dried_stock_value;
 
   const abcDriedKg =
     summary.grade_stocks.A.remaining_kg +
@@ -41,7 +44,8 @@ export function DashboardView({ summary, onNavigate }: DashboardViewProps) {
         'วันที่เสร็จ',
         'สถานะ',
         'ผลสดที่ใช้ (กก.)',
-        'เมล็ดหมัก (กก.)',
+        'เมล็ดสดรับซื้อที่ใช้ (กก.)',
+        'เมล็ดหมักรวม (กก.)',
         'เกรด A (กก.)',
         'เกรด B (กก.)',
         'เกรด C (กก.)',
@@ -59,6 +63,7 @@ export function DashboardView({ summary, onNavigate }: DashboardViewProps) {
         b.completed_date ?? '-',
         b.status === 'completed' ? 'เสร็จสิ้น' : 'กำลังหมัก',
         b.fresh_used_kg,
+        b.wet_purchased_used_kg,
         b.wet_bean_kg,
         b.grade_a_kg,
         b.grade_b_kg,
@@ -117,7 +122,7 @@ export function DashboardView({ summary, onNavigate }: DashboardViewProps) {
             {formatThb(totalInventoryValue)}
           </div>
           <div className="mt-2 text-xs text-[#78716C] tabular-nums">
-            ผลสด {formatKg(summary.fresh_stock_kg, 0)} · แห้งรวม Bulk{' '}
+            ผลสด {formatKg(summary.fresh_stock_kg, 0)} · เมล็ดสด {formatKg(summary.wet_stock_kg, 0)} · แห้ง{' '}
             {formatKg(summary.total_dried_stock_kg, 0)}
           </div>
         </div>
@@ -139,7 +144,7 @@ export function DashboardView({ summary, onNavigate }: DashboardViewProps) {
           <div>
             <h2 className="text-base font-semibold text-[#1C1917]">สายพานสต๊อกโรงงานแบบเรียลไทม์</h2>
             <p className="text-xs text-[#57534E] mt-0.5">
-              รับเข้าผลสด · เบิกตัดยอดเข้าหมัก · ตากแห้งและคัดเกรดเข้าสต๊อก (เกรด A, B, C และ Bulk)
+              รับเข้าผลสด & เมล็ดสด · เบิกตัดยอดเข้าหมัก · ตากแห้งและคัดเกรดเข้าสต๊อก (เกรด A, B, C และ Bulk)
             </p>
           </div>
         </div>
@@ -151,14 +156,16 @@ export function DashboardView({ summary, onNavigate }: DashboardViewProps) {
             className="text-left p-4 rounded-lg bg-[#FAFAF8] border border-[#E5E5E0] hover:border-[#9A4A18]/50 transition-colors flex flex-col justify-between"
           >
             <div className="flex items-center justify-between text-xs text-[#57534E]">
-              <span>1. สต๊อกผลโกโก้สด</span>
+              <span>1. วัตถุดิบสด (ผลสด / เมล็ดสด)</span>
               <ArrowRight className="w-3.5 h-3.5 text-[#78716C]" />
             </div>
-            <div className="mt-2 text-xl font-bold font-mono tabular-nums text-[#1C1917]">
-              {formatKg(summary.fresh_stock_kg)}
+            <div className="mt-2 space-y-0.5">
+              <div className="text-lg font-bold font-mono tabular-nums text-[#1C1917]">
+                ผล {formatKg(summary.fresh_stock_kg, 0)} · เมล็ด {formatKg(summary.wet_stock_kg, 0)}
+              </div>
             </div>
             <div className="mt-1 text-xs text-[#78716C] font-mono tabular-nums">
-              เฉลี่ย {formatThb(summary.avg_fresh_cost_per_kg)}/กก. · รวม {formatThb(summary.fresh_stock_value)}
+              มูลค่ารวม {formatThb(summary.fresh_stock_value + summary.wet_stock_value)}
             </div>
           </button>
 

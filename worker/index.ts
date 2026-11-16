@@ -8,6 +8,7 @@ import type {
   FreshPurchase,
   GradeStockSummary,
   ProcessingBatch,
+  RawMaterialType,
   SalesDispatch,
   StockLedgerEntry,
 } from '../src/types';
@@ -38,10 +39,12 @@ const DDL_STATEMENTS = [
     id INTEGER PRIMARY KEY CHECK (id = 1),
     fresh_stock_kg REAL NOT NULL DEFAULT 0,
     fresh_stock_value REAL NOT NULL DEFAULT 0,
+    wet_stock_kg REAL NOT NULL DEFAULT 0,
+    wet_stock_value REAL NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
   )`,
-  `INSERT OR IGNORE INTO stock_state (id, fresh_stock_kg, fresh_stock_value, updated_at)
-   VALUES (1, 0, 0, datetime('now'))`,
+  `INSERT OR IGNORE INTO stock_state (id, fresh_stock_kg, fresh_stock_value, wet_stock_kg, wet_stock_value, updated_at)
+   VALUES (1, 0, 0, 0, 0, datetime('now'))`,
   `CREATE TABLE IF NOT EXISTS farmers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -54,6 +57,7 @@ const DDL_STATEMENTS = [
     purchase_code TEXT NOT NULL UNIQUE,
     scheduled_date TEXT NOT NULL,
     farmer_id INTEGER NOT NULL,
+    raw_type TEXT NOT NULL DEFAULT 'POD' CHECK (raw_type IN ('POD', 'WET_BEAN')),
     weight_kg REAL NOT NULL,
     price_per_kg REAL NOT NULL,
     total_cost REAL NOT NULL,
@@ -67,8 +71,10 @@ const DDL_STATEMENTS = [
     started_date TEXT NOT NULL,
     completed_date TEXT,
     status TEXT NOT NULL CHECK (status IN ('fermenting', 'completed')),
-    fresh_used_kg REAL NOT NULL,
-    fresh_cost_allocated REAL NOT NULL,
+    fresh_used_kg REAL NOT NULL DEFAULT 0,
+    fresh_cost_allocated REAL NOT NULL DEFAULT 0,
+    wet_purchased_used_kg REAL NOT NULL DEFAULT 0,
+    wet_cost_allocated REAL NOT NULL DEFAULT 0,
     wet_bean_kg REAL NOT NULL,
     processing_expense REAL NOT NULL DEFAULT 0,
     bulk_loss_kg REAL NOT NULL DEFAULT 0,
@@ -137,9 +143,29 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+async function hasColumnD1(db: D1Database, tableName: string, colName: string): Promise<boolean> {
+  const res = await db.prepare(`PRAGMA table_info(${tableName})`).all<{ name: string }>();
+  return res.results.some((c) => c.name === colName);
+}
+
 async function ensureSchemaAndSeed(db: D1Database): Promise<void> {
   if (!schemaReady) {
     await db.batch(DDL_STATEMENTS.map((sql) => db.prepare(sql)));
+    if (!(await hasColumnD1(db, 'stock_state', 'wet_stock_kg'))) {
+      await db.batch([
+        db.prepare('ALTER TABLE stock_state ADD COLUMN wet_stock_kg REAL NOT NULL DEFAULT 0'),
+        db.prepare('ALTER TABLE stock_state ADD COLUMN wet_stock_value REAL NOT NULL DEFAULT 0'),
+      ]);
+    }
+    if (!(await hasColumnD1(db, 'fresh_purchases', 'raw_type'))) {
+      await db.prepare("ALTER TABLE fresh_purchases ADD COLUMN raw_type TEXT NOT NULL DEFAULT 'POD'").run();
+    }
+    if (!(await hasColumnD1(db, 'processing_batches', 'wet_purchased_used_kg'))) {
+      await db.batch([
+        db.prepare('ALTER TABLE processing_batches ADD COLUMN wet_purchased_used_kg REAL NOT NULL DEFAULT 0'),
+        db.prepare('ALTER TABLE processing_batches ADD COLUMN wet_cost_allocated REAL NOT NULL DEFAULT 0'),
+      ]);
+    }
     schemaReady = true;
   }
 
@@ -164,6 +190,7 @@ async function ensureSchemaAndSeed(db: D1Database): Promise<void> {
     await createPurchase(db, {
       scheduledDate: '2026-10-28',
       farmerId: f1.id,
+      rawType: 'POD',
       weightKg: 420,
       pricePerKg: 14,
       notes: 'ผลสดสุกจัด รอบรับซื้อวันอังคาร',
@@ -171,6 +198,7 @@ async function ensureSchemaAndSeed(db: D1Database): Promise<void> {
     await createPurchase(db, {
       scheduledDate: '2026-10-28',
       farmerId: f2.id,
+      rawType: 'POD',
       weightKg: 380,
       pricePerKg: 15,
       notes: 'คัดไซส์ใหญ่ เปลือกบาง',
@@ -178,6 +206,7 @@ async function ensureSchemaAndSeed(db: D1Database): Promise<void> {
     await createPurchase(db, {
       scheduledDate: '2026-11-05',
       farmerId: f3.id,
+      rawType: 'POD',
       weightKg: 510,
       pricePerKg: 14.5,
       notes: 'รับซื้อลานหน้าโรงงาน',
@@ -185,14 +214,24 @@ async function ensureSchemaAndSeed(db: D1Database): Promise<void> {
     await createPurchase(db, {
       scheduledDate: '2026-11-12',
       farmerId: f1.id,
+      rawType: 'POD',
       weightKg: 260,
       pricePerKg: 15,
       notes: 'ผลสดรอบล่าสุด เตรียมเข้าหมัก',
+    });
+    await createPurchase(db, {
+      scheduledDate: '2026-11-13',
+      farmerId: f2.id,
+      rawType: 'WET_BEAN',
+      weightKg: 85,
+      pricePerKg: 42,
+      notes: 'เมล็ดสดแกะจากสวนแล้ว พร้อมเข้าถังหมัก',
     });
 
     const b1 = await startBatch(db, {
       startedDate: '2026-10-29',
       freshUsedKg: 600,
+      wetPurchasedUsedKg: 0,
       wetBeanKg: 215,
       processingExpense: 1800,
       notes: 'ถังหมักไม้ 1-2 หมัก 6 วัน พลิกกลับทุก 48 ชม.',
@@ -210,6 +249,7 @@ async function ensureSchemaAndSeed(db: D1Database): Promise<void> {
     const b2 = await startBatch(db, {
       startedDate: '2026-11-06',
       freshUsedKg: 500,
+      wetPurchasedUsedKg: 0,
       wetBeanKg: 175,
       processingExpense: 1500,
       notes: 'หมักช่วงฝนตก อุณหภูมิถังขึ้นช้า',
@@ -227,6 +267,7 @@ async function ensureSchemaAndSeed(db: D1Database): Promise<void> {
     await startBatch(db, {
       startedDate: '2026-11-14',
       freshUsedKg: 310,
+      wetPurchasedUsedKg: 0,
       wetBeanKg: 112,
       processingExpense: 950,
       notes: 'กำลังหมักวันที่ 2 ในลังไม้หมายเลข 3',
@@ -269,13 +310,21 @@ async function nextCode(
   return `${prefix}-${compactDate}-${seq}`;
 }
 
-async function getFreshStockState(
-  db: D1Database
-): Promise<{ fresh_stock_kg: number; fresh_stock_value: number }> {
+async function getRawStockState(db: D1Database): Promise<{
+  fresh_stock_kg: number;
+  fresh_stock_value: number;
+  wet_stock_kg: number;
+  wet_stock_value: number;
+}> {
   const row = await db
-    .prepare('SELECT fresh_stock_kg, fresh_stock_value FROM stock_state WHERE id = 1')
-    .first<{ fresh_stock_kg: number; fresh_stock_value: number }>();
-  return row ?? { fresh_stock_kg: 0, fresh_stock_value: 0 };
+    .prepare('SELECT fresh_stock_kg, fresh_stock_value, wet_stock_kg, wet_stock_value FROM stock_state WHERE id = 1')
+    .first<{
+      fresh_stock_kg: number;
+      fresh_stock_value: number;
+      wet_stock_kg: number;
+      wet_stock_value: number;
+    }>();
+  return row ?? { fresh_stock_kg: 0, fresh_stock_value: 0, wet_stock_kg: 0, wet_stock_value: 0 };
 }
 
 async function listFarmers(db: D1Database): Promise<Farmer[]> {
@@ -284,6 +333,8 @@ async function listFarmers(db: D1Database): Promise<Farmer[]> {
       `SELECT f.*,
         COUNT(p.id) as total_purchases,
         COALESCE(SUM(p.weight_kg), 0) as total_weight_kg,
+        COALESCE(SUM(CASE WHEN p.raw_type = 'POD' THEN p.weight_kg ELSE 0 END), 0) as total_pod_kg,
+        COALESCE(SUM(CASE WHEN p.raw_type = 'WET_BEAN' THEN p.weight_kg ELSE 0 END), 0) as total_wet_kg,
         COALESCE(SUM(p.total_cost), 0) as total_spent
       FROM farmers f
       LEFT JOIN fresh_purchases p ON p.farmer_id = f.id
@@ -312,7 +363,7 @@ async function createFarmer(
 
 async function listPurchases(
   db: D1Database,
-  filters?: { date?: string; farmerId?: number }
+  filters?: { date?: string; farmerId?: number; rawType?: RawMaterialType }
 ): Promise<FreshPurchase[]> {
   let sql = `
     SELECT p.*, f.name as farmer_name, f.location as farmer_location
@@ -329,6 +380,10 @@ async function listPurchases(
     sql += ' AND p.farmer_id = ?';
     params.push(filters.farmerId);
   }
+  if (filters?.rawType) {
+    sql += ' AND p.raw_type = ?';
+    params.push(filters.rawType);
+  }
   sql += ' ORDER BY p.scheduled_date DESC, p.id DESC';
   const res = await db.prepare(sql).bind(...params).all<FreshPurchase>();
   return res.results;
@@ -339,11 +394,13 @@ async function createPurchase(
   input: {
     scheduledDate: string;
     farmerId: number;
+    rawType?: RawMaterialType;
     weightKg: number;
     pricePerKg: number;
     notes?: string;
   }
 ): Promise<FreshPurchase> {
+  const rawType: RawMaterialType = input.rawType === 'WET_BEAN' ? 'WET_BEAN' : 'POD';
   const weightKg = round2(Number(input.weightKg));
   const pricePerKg = round2(Number(input.pricePerKg));
   if (!input.scheduledDate) throw new Error('กรุณาระบุวันที่มีการกำหนดรับซื้อ');
@@ -358,18 +415,20 @@ async function createPurchase(
   if (!farmer) throw new Error('ไม่พบข้อมูลเกษตรกรที่เลือก');
 
   const totalCost = round2(weightKg * pricePerKg);
-  const code = await nextCode(db, 'PO', input.scheduledDate, 'fresh_purchases', 'purchase_code');
+  const prefix = rawType === 'WET_BEAN' ? 'WB' : 'PO';
+  const code = await nextCode(db, prefix, input.scheduledDate, 'fresh_purchases', 'purchase_code');
   const createdAt = nowIso();
 
   const insertRes = await db
     .prepare(
-      `INSERT INTO fresh_purchases (purchase_code, scheduled_date, farmer_id, weight_kg, price_per_kg, total_cost, notes, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO fresh_purchases (purchase_code, scheduled_date, farmer_id, raw_type, weight_kg, price_per_kg, total_cost, notes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       code,
       input.scheduledDate,
       farmer.id,
+      rawType,
       weightKg,
       pricePerKg,
       totalCost,
@@ -378,26 +437,46 @@ async function createPurchase(
     )
     .run();
 
+  const updateStockStmt =
+    rawType === 'WET_BEAN'
+      ? db
+          .prepare(
+            `UPDATE stock_state
+             SET wet_stock_kg = ROUND(wet_stock_kg + ?, 2),
+                 wet_stock_value = ROUND(wet_stock_value + ?, 2),
+                 updated_at = ?
+             WHERE id = 1`
+          )
+          .bind(weightKg, totalCost, createdAt)
+      : db
+          .prepare(
+            `UPDATE stock_state
+             SET fresh_stock_kg = ROUND(fresh_stock_kg + ?, 2),
+                 fresh_stock_value = ROUND(fresh_stock_value + ?, 2),
+                 updated_at = ?
+             WHERE id = 1`
+          )
+          .bind(weightKg, totalCost, createdAt);
+
+  const itemCategory = rawType === 'WET_BEAN' ? 'เมล็ดสด' : 'ผลสด';
+  const titleLabel =
+    rawType === 'WET_BEAN'
+      ? `รับซื้อเมล็ดโกโก้สด (${pricePerKg.toLocaleString('th-TH')} ฿/กก.)`
+      : `รับซื้อผลโกโก้สด (${pricePerKg.toLocaleString('th-TH')} ฿/กก.)`;
+
   await db.batch([
-    db
-      .prepare(
-        `UPDATE stock_state
-         SET fresh_stock_kg = ROUND(fresh_stock_kg + ?, 2),
-             fresh_stock_value = ROUND(fresh_stock_value + ?, 2),
-             updated_at = ?
-         WHERE id = 1`
-      )
-      .bind(weightKg, totalCost, createdAt),
+    updateStockStmt,
     db
       .prepare(
         `INSERT INTO stock_ledger (tx_date, tx_type, ref_code, title, counterparty, item_category, weight_delta_kg, amount_thb, notes, created_at)
-         VALUES (?, 'PURCHASE_FRESH', ?, ?, ?, 'ผลสด', ?, ?, ?, ?)`
+         VALUES (?, 'PURCHASE_FRESH', ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         input.scheduledDate,
         code,
-        `รับซื้อผลโกโก้สด (${pricePerKg.toLocaleString('th-TH')} ฿/กก.)`,
+        titleLabel,
         farmer.name,
+        itemCategory,
         weightKg,
         -totalCost,
         (input.notes ?? '').trim(),
@@ -424,33 +503,50 @@ async function deletePurchase(db: D1Database, id: number): Promise<void> {
     .first<FreshPurchase>();
   if (!purchase) throw new Error('ไม่พบรายการรับซื้อ');
 
-  const state = await getFreshStockState(db);
-  if (state.fresh_stock_kg + 0.001 < purchase.weight_kg) {
-    throw new Error('ไม่สามารถลบรายการรับซื้อนี้ได้ เนื่องจากผลสดถูกเบิกเข้าหมักแปรรูปไปแล้ว');
+  const state = await getRawStockState(db);
+  const isWet = purchase.raw_type === 'WET_BEAN';
+  const avail = isWet ? state.wet_stock_kg : state.fresh_stock_kg;
+  if (avail + 0.001 < purchase.weight_kg) {
+    throw new Error(
+      `ไม่สามารถลบรายการรับซื้อนี้ได้ เนื่องจาก${isWet ? 'เมล็ดสด' : 'ผลสด'}ถูกเบิกเข้าหมักแปรรูปไปแล้ว`
+    );
   }
 
   const createdAt = nowIso();
+  const reverseStmt = isWet
+    ? db
+        .prepare(
+          `UPDATE stock_state
+           SET wet_stock_kg = MAX(0, ROUND(wet_stock_kg - ?, 2)),
+               wet_stock_value = MAX(0, ROUND(wet_stock_value - ?, 2)),
+               updated_at = ?
+           WHERE id = 1`
+        )
+        .bind(purchase.weight_kg, purchase.total_cost, createdAt)
+    : db
+        .prepare(
+          `UPDATE stock_state
+           SET fresh_stock_kg = MAX(0, ROUND(fresh_stock_kg - ?, 2)),
+               fresh_stock_value = MAX(0, ROUND(fresh_stock_value - ?, 2)),
+               updated_at = ?
+           WHERE id = 1`
+        )
+        .bind(purchase.weight_kg, purchase.total_cost, createdAt);
+
   await db.batch([
-    db
-      .prepare(
-        `UPDATE stock_state
-         SET fresh_stock_kg = MAX(0, ROUND(fresh_stock_kg - ?, 2)),
-             fresh_stock_value = MAX(0, ROUND(fresh_stock_value - ?, 2)),
-             updated_at = ?
-         WHERE id = 1`
-      )
-      .bind(purchase.weight_kg, purchase.total_cost, createdAt),
+    reverseStmt,
     db.prepare('DELETE FROM fresh_purchases WHERE id = ?').bind(id),
     db
       .prepare(
         `INSERT INTO stock_ledger (tx_date, tx_type, ref_code, title, counterparty, item_category, weight_delta_kg, amount_thb, notes, created_at)
-         VALUES (?, 'VOID_REVERSAL', ?, ?, ?, 'ผลสด', ?, ?, ?, ?)`
+         VALUES (?, 'VOID_REVERSAL', ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         createdAt.slice(0, 10),
         purchase.purchase_code,
-        'ยกเลิกรายการรับซื้อผลสด',
+        isWet ? 'ยกเลิกรายการรับซื้อเมล็ดสด' : 'ยกเลิกรายการรับซื้อผลสด',
         purchase.farmer_name,
+        isWet ? 'เมล็ดสด' : 'ผลสด',
         -purchase.weight_kg,
         purchase.total_cost,
         'คืนสต๊อกและยอดเงินจากการลบรายการ',
@@ -484,30 +580,46 @@ async function startBatch(
   db: D1Database,
   input: {
     startedDate: string;
-    freshUsedKg: number;
+    freshUsedKg?: number;
+    wetPurchasedUsedKg?: number;
     wetBeanKg: number;
     processingExpense?: number;
     notes?: string;
   }
 ): Promise<ProcessingBatch> {
-  const freshUsedKg = round2(Number(input.freshUsedKg));
+  const freshUsedKg = round2(Number(input.freshUsedKg ?? 0));
+  const wetPurchasedUsedKg = round2(Number(input.wetPurchasedUsedKg ?? 0));
   const wetBeanKg = round2(Number(input.wetBeanKg));
   const processingExpense = round2(Number(input.processingExpense ?? 0));
 
   if (!input.startedDate) throw new Error('กรุณาระบุวันที่เริ่มแปรรูป');
-  if (!(freshUsedKg > 0)) throw new Error('น้ำหนักผลสดที่เบิกใช้ต้องมากกว่า 0 กก.');
-  if (!(wetBeanKg > 0)) throw new Error('น้ำหนักเมล็ดสดเตรียมหมักต้องมากกว่า 0 กก.');
+  if (freshUsedKg < 0 || wetPurchasedUsedKg < 0) throw new Error('น้ำหนักที่เบิกใช้ต้องไม่ติดลบ');
+  if (freshUsedKg <= 0 && wetPurchasedUsedKg <= 0) {
+    throw new Error('กรุณาระบุน้ำหนักผลสด หรือ เมล็ดสดที่เบิกใช้เข้าหมักอย่างน้อย 1 รายการ');
+  }
+  if (!(wetBeanKg > 0)) throw new Error('น้ำหนักเมล็ดสดรวมที่เข้าถังหมักต้องมากกว่า 0 กก.');
   if (processingExpense < 0) throw new Error('ค่าใช้จ่ายแปรรูปต้องไม่ติดลบ');
 
-  const state = await getFreshStockState(db);
-  if (state.fresh_stock_kg + 0.001 < freshUsedKg) {
+  const state = await getRawStockState(db);
+  if (freshUsedKg > 0 && state.fresh_stock_kg + 0.001 < freshUsedKg) {
     throw new Error(
       `สต๊อกผลสดคงเหลือไม่เพียงพอ (คงเหลือ ${state.fresh_stock_kg.toLocaleString('th-TH')} กก. แต่ต้องการเบิก ${freshUsedKg.toLocaleString('th-TH')} กก.)`
     );
   }
+  if (wetPurchasedUsedKg > 0 && state.wet_stock_kg + 0.001 < wetPurchasedUsedKg) {
+    throw new Error(
+      `สต๊อกเมล็ดสดคงเหลือไม่เพียงพอ (คงเหลือ ${state.wet_stock_kg.toLocaleString('th-TH')} กก. แต่ต้องการเบิก ${wetPurchasedUsedKg.toLocaleString('th-TH')} กก.)`
+    );
+  }
 
   const avgFreshCost = state.fresh_stock_kg > 0 ? state.fresh_stock_value / state.fresh_stock_kg : 0;
-  const freshCostAllocated = round2(Math.min(state.fresh_stock_value, freshUsedKg * avgFreshCost));
+  const freshCostAllocated =
+    freshUsedKg > 0 ? round2(Math.min(state.fresh_stock_value, freshUsedKg * avgFreshCost)) : 0;
+
+  const avgWetCost = state.wet_stock_kg > 0 ? state.wet_stock_value / state.wet_stock_kg : 0;
+  const wetCostAllocated =
+    wetPurchasedUsedKg > 0 ? round2(Math.min(state.wet_stock_value, wetPurchasedUsedKg * avgWetCost)) : 0;
+
   const createdAt = nowIso();
   const batchCode = await nextCode(db, 'BATCH', input.startedDate, 'processing_batches', 'batch_code');
 
@@ -516,24 +628,28 @@ async function startBatch(
       `UPDATE stock_state
        SET fresh_stock_kg = MAX(0, ROUND(fresh_stock_kg - ?, 2)),
            fresh_stock_value = MAX(0, ROUND(fresh_stock_value - ?, 2)),
+           wet_stock_kg = MAX(0, ROUND(wet_stock_kg - ?, 2)),
+           wet_stock_value = MAX(0, ROUND(wet_stock_value - ?, 2)),
            updated_at = ?
        WHERE id = 1`
     )
-    .bind(freshUsedKg, freshCostAllocated, createdAt)
+    .bind(freshUsedKg, freshCostAllocated, wetPurchasedUsedKg, wetCostAllocated, createdAt)
     .run();
 
   const insertRes = await db
     .prepare(
       `INSERT INTO processing_batches (
         batch_code, started_date, status, fresh_used_kg, fresh_cost_allocated,
-        wet_bean_kg, processing_expense, notes, created_at
-      ) VALUES (?, ?, 'fermenting', ?, ?, ?, ?, ?, ?)`
+        wet_purchased_used_kg, wet_cost_allocated, wet_bean_kg, processing_expense, notes, created_at
+      ) VALUES (?, ?, 'fermenting', ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       batchCode,
       input.startedDate,
       freshUsedKg,
       freshCostAllocated,
+      wetPurchasedUsedKg,
+      wetCostAllocated,
       wetBeanKg,
       processingExpense,
       (input.notes ?? '').trim(),
@@ -541,22 +657,48 @@ async function startBatch(
     )
     .run();
 
-  await db
-    .prepare(
-      `INSERT INTO stock_ledger (tx_date, tx_type, ref_code, title, counterparty, item_category, weight_delta_kg, amount_thb, notes, created_at)
-       VALUES (?, 'START_FERMENT', ?, ?, ?, 'ผลสด (ตัดเบิกเข้าหมัก)', ?, ?, ?, ?)`
-    )
-    .bind(
-      input.startedDate,
-      batchCode,
-      `ตัดสต๊อกผลสดเข้าหมัก -> เมล็ดสด ${wetBeanKg.toLocaleString('th-TH')} กก.`,
-      batchCode,
-      -freshUsedKg,
-      -processingExpense,
-      (input.notes ?? '').trim(),
-      createdAt
-    )
-    .run();
+  const ledgerStmts: D1PreparedStatement[] = [];
+  if (freshUsedKg > 0) {
+    ledgerStmts.push(
+      db
+        .prepare(
+          `INSERT INTO stock_ledger (tx_date, tx_type, ref_code, title, counterparty, item_category, weight_delta_kg, amount_thb, notes, created_at)
+           VALUES (?, 'START_FERMENT', ?, ?, ?, 'ผลสด (ตัดเบิกเข้าหมัก)', ?, ?, ?, ?)`
+        )
+        .bind(
+          input.startedDate,
+          batchCode,
+          `ตัดสต๊อกผลสดเข้าหมัก -> เมล็ดรวม ${wetBeanKg.toLocaleString('th-TH')} กก.`,
+          batchCode,
+          -freshUsedKg,
+          wetPurchasedUsedKg > 0 ? 0 : -processingExpense,
+          (input.notes ?? '').trim(),
+          createdAt
+        )
+    );
+  }
+  if (wetPurchasedUsedKg > 0) {
+    ledgerStmts.push(
+      db
+        .prepare(
+          `INSERT INTO stock_ledger (tx_date, tx_type, ref_code, title, counterparty, item_category, weight_delta_kg, amount_thb, notes, created_at)
+           VALUES (?, 'START_FERMENT', ?, ?, ?, 'เมล็ดสด (ตัดเบิกเข้าหมัก)', ?, ?, ?, ?)`
+        )
+        .bind(
+          input.startedDate,
+          batchCode,
+          `ตัดสต๊อกเมล็ดสดเข้าหมัก -> เมล็ดรวม ${wetBeanKg.toLocaleString('th-TH')} กก.`,
+          batchCode,
+          -wetPurchasedUsedKg,
+          -processingExpense,
+          (input.notes ?? '').trim(),
+          createdAt
+        )
+    );
+  }
+  if (ledgerStmts.length > 0) {
+    await db.batch(ledgerStmts);
+  }
 
   const row = await db
     .prepare('SELECT * FROM processing_batches WHERE id = ?')
@@ -601,7 +743,9 @@ async function completeBatch(
   if (batch.status === 'completed') throw new Error('รอบการผลิตนี้ปิดยอดและคัดเกรดไปแล้ว');
 
   const totalProcessingExpense = round2(batch.processing_expense + extraExpense);
-  const totalBatchCost = round2(batch.fresh_cost_allocated + totalProcessingExpense);
+  const totalBatchCost = round2(
+    batch.fresh_cost_allocated + (batch.wet_cost_allocated ?? 0) + totalProcessingExpense
+  );
   const costPerDriedKg = round2(totalBatchCost / driedTotalKg);
   const bulkAllocatedCost = round2(gradeBulkKg * costPerDriedKg);
   const mergedNotes = [batch.notes, (input.notes ?? '').trim()].filter(Boolean).join(' · ');
@@ -906,14 +1050,15 @@ async function listLedger(
 }
 
 async function getDashboardSummary(db: D1Database): Promise<DashboardSummary> {
-  const state = await getFreshStockState(db);
+  const state = await getRawStockState(db);
   const avgFreshCost = state.fresh_stock_kg > 0 ? round2(state.fresh_stock_value / state.fresh_stock_kg) : 0;
+  const avgWetCost = state.wet_stock_kg > 0 ? round2(state.wet_stock_value / state.wet_stock_kg) : 0;
 
   const fermAgg = await db
     .prepare(
       `SELECT COUNT(*) as cnt,
               COALESCE(SUM(wet_bean_kg), 0) as wet_kg,
-              COALESCE(SUM(fresh_cost_allocated + processing_expense), 0) as cost_val
+              COALESCE(SUM(fresh_cost_allocated + wet_cost_allocated + processing_expense), 0) as cost_val
        FROM processing_batches WHERE status = 'fermenting'`
     )
     .first<{ cnt: number; wet_kg: number; cost_val: number }>();
@@ -1014,10 +1159,11 @@ async function getDashboardSummary(db: D1Database): Promise<DashboardSummary> {
   }
 
   const batchAnalytics: BatchAnalyticsRow[] = batches.map((b) => {
-    const totalCost = round2(b.fresh_cost_allocated + b.processing_expense);
+    const totalCost = round2(b.fresh_cost_allocated + (b.wet_cost_allocated ?? 0) + b.processing_expense);
     const salesInfo = batchSalesMap.get(b.id) ?? { soldKg: 0, revenue: 0, cogs: 0 };
     const remInfo = batchRemMap.get(b.id) ?? { A: 0, B: 0, C: 0, BULK: 0, bulkVal: 0, val: 0 };
-    const yieldPct = b.fresh_used_kg > 0 ? round2((b.dried_total_kg / b.fresh_used_kg) * 100) : 0;
+    const baseInputKg = b.fresh_used_kg > 0 ? b.fresh_used_kg + (b.wet_purchased_used_kg ?? 0) : b.wet_bean_kg;
+    const yieldPct = baseInputKg > 0 ? round2((b.dried_total_kg / baseInputKg) * 100) : 0;
     const realizedPnl = round2(salesInfo.revenue - salesInfo.cogs - remInfo.bulkVal);
     const netCycleBalance = round2(salesInfo.revenue - totalCost);
 
@@ -1028,6 +1174,7 @@ async function getDashboardSummary(db: D1Database): Promise<DashboardSummary> {
       completed_date: b.completed_date,
       status: b.status,
       fresh_used_kg: b.fresh_used_kg,
+      wet_purchased_used_kg: b.wet_purchased_used_kg ?? 0,
       wet_bean_kg: b.wet_bean_kg,
       dried_total_kg: b.dried_total_kg,
       yield_percent: yieldPct,
@@ -1057,6 +1204,9 @@ async function getDashboardSummary(db: D1Database): Promise<DashboardSummary> {
     fresh_stock_kg: round2(state.fresh_stock_kg),
     fresh_stock_value: round2(state.fresh_stock_value),
     avg_fresh_cost_per_kg: avgFreshCost,
+    wet_stock_kg: round2(state.wet_stock_kg),
+    wet_stock_value: round2(state.wet_stock_value),
+    avg_wet_cost_per_kg: avgWetCost,
     fermenting_batch_count: fermAgg?.cnt ?? 0,
     fermenting_wet_kg: round2(fermAgg?.wet_kg ?? 0),
     fermenting_cost_value: round2(fermAgg?.cost_val ?? 0),
@@ -1112,12 +1262,15 @@ export default {
         const date = searchParams.get('date') || undefined;
         const farmerIdStr = searchParams.get('farmerId');
         const farmerId = farmerIdStr ? Number(farmerIdStr) : undefined;
-        return json(await listPurchases(env.DB, { date, farmerId }));
+        const rawTypeParam = searchParams.get('rawType');
+        const rawType = rawTypeParam === 'POD' || rawTypeParam === 'WET_BEAN' ? rawTypeParam : undefined;
+        return json(await listPurchases(env.DB, { date, farmerId, rawType }));
       }
       if (pathname === '/api/purchases' && method === 'POST') {
         const body = (await request.json()) as {
           scheduledDate: string;
           farmerId: number;
+          rawType?: RawMaterialType;
           weightKg: number;
           pricePerKg: number;
           notes?: string;
@@ -1135,7 +1288,8 @@ export default {
       if (pathname === '/api/batches/start' && method === 'POST') {
         const body = (await request.json()) as {
           startedDate: string;
-          freshUsedKg: number;
+          freshUsedKg?: number;
+          wetPurchasedUsedKg?: number;
           wetBeanKg: number;
           processingExpense?: number;
           notes?: string;

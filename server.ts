@@ -56,7 +56,9 @@ app.get('/api/purchases', (req, res) => {
     const date = typeof req.query.date === 'string' && req.query.date ? req.query.date : undefined;
     const farmerId =
       typeof req.query.farmerId === 'string' && req.query.farmerId ? Number(req.query.farmerId) : undefined;
-    res.json(listPurchases({ date, farmerId }));
+    const rawType =
+      req.query.rawType === 'POD' || req.query.rawType === 'WET_BEAN' ? req.query.rawType : undefined;
+    res.json(listPurchases({ date, farmerId, rawType }));
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }

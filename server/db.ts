@@ -12,6 +12,7 @@ import type {
   FreshPurchase,
   GradeStockSummary,
   ProcessingBatch,
+  RawMaterialType,
   SalesDispatch,
   StockLedgerEntry,
 } from '../src/types.ts';
@@ -59,7 +60,25 @@ function withTransaction<T>(fn: () => T): T {
   }
 }
 
+function hasColumn(tableName: string, colName: string): boolean {
+  const cols = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  return cols.some((c) => c.name === colName);
+}
+
 function upgradeExistingSchemaIfNeeded(): void {
+  // Add wet_stock columns & raw_type columns safely for existing DBs
+  if (!hasColumn('stock_state', 'wet_stock_kg')) {
+    db.exec('ALTER TABLE stock_state ADD COLUMN wet_stock_kg REAL NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE stock_state ADD COLUMN wet_stock_value REAL NOT NULL DEFAULT 0');
+  }
+  if (!hasColumn('fresh_purchases', 'raw_type')) {
+    db.exec("ALTER TABLE fresh_purchases ADD COLUMN raw_type TEXT NOT NULL DEFAULT 'POD'");
+  }
+  if (!hasColumn('processing_batches', 'wet_purchased_used_kg')) {
+    db.exec('ALTER TABLE processing_batches ADD COLUMN wet_purchased_used_kg REAL NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE processing_batches ADD COLUMN wet_cost_allocated REAL NOT NULL DEFAULT 0');
+  }
+
   const bgsRow = db
     .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='batch_grade_stock'")
     .get() as { sql: string } | undefined;
@@ -103,7 +122,6 @@ function upgradeExistingSchemaIfNeeded(): void {
         ALTER TABLE sales_dispatches_new RENAME TO sales_dispatches;
       `);
 
-      // Rebalance existing completed batches that had bulk_loss_kg so BULK appears in stock
       const batchesWithBulk = db
         .prepare("SELECT * FROM processing_batches WHERE status = 'completed' AND bulk_loss_kg > 0")
         .all() as unknown as ProcessingBatch[];
@@ -113,7 +131,7 @@ function upgradeExistingSchemaIfNeeded(): void {
           .prepare("SELECT id FROM batch_grade_stock WHERE batch_id = ? AND grade = 'BULK'")
           .get(b.id);
         if (!existingBulkLot) {
-          const totalCost = round2(b.fresh_cost_allocated + b.processing_expense);
+          const totalCost = round2(b.fresh_cost_allocated + (b.wet_cost_allocated ?? 0) + b.processing_expense);
           const totalWithBulk = round2(b.grade_a_kg + b.grade_b_kg + b.grade_c_kg + b.bulk_loss_kg);
           const unifiedCost = totalWithBulk > 0 ? round2(totalCost / totalWithBulk) : 0;
           const bulkVal = round2(b.bulk_loss_kg * unifiedCost);
@@ -137,8 +155,14 @@ function upgradeExistingSchemaIfNeeded(): void {
 }
 
 export function initDatabase(): void {
-  const migrationSql = fs.readFileSync(MIGRATION_PATH, 'utf-8');
-  db.exec(migrationSql);
+  // Ensure existing tables don't fail if migration runs on pre-upgrade DB
+  const tableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='stock_state'")
+    .get();
+  if (!tableExists) {
+    const migrationSql = fs.readFileSync(MIGRATION_PATH, 'utf-8');
+    db.exec(migrationSql);
+  }
   upgradeExistingSchemaIfNeeded();
   seedInitialDataIfEmpty();
 }
@@ -153,11 +177,18 @@ function nextCode(prefix: string, dateStr: string, table: string, col: string): 
   return `${prefix}-${compactDate}-${seq}`;
 }
 
-function getFreshStockState(): { fresh_stock_kg: number; fresh_stock_value: number } {
+function getRawStockState(): {
+  fresh_stock_kg: number;
+  fresh_stock_value: number;
+  wet_stock_kg: number;
+  wet_stock_value: number;
+} {
   const row = db
-    .prepare('SELECT fresh_stock_kg, fresh_stock_value FROM stock_state WHERE id = 1')
-    .get() as { fresh_stock_kg: number; fresh_stock_value: number } | undefined;
-  return row ?? { fresh_stock_kg: 0, fresh_stock_value: 0 };
+    .prepare('SELECT fresh_stock_kg, fresh_stock_value, wet_stock_kg, wet_stock_value FROM stock_state WHERE id = 1')
+    .get() as
+    | { fresh_stock_kg: number; fresh_stock_value: number; wet_stock_kg: number; wet_stock_value: number }
+    | undefined;
+  return row ?? { fresh_stock_kg: 0, fresh_stock_value: 0, wet_stock_kg: 0, wet_stock_value: 0 };
 }
 
 function seedInitialDataIfEmpty(): void {
@@ -171,6 +202,7 @@ function seedInitialDataIfEmpty(): void {
   createPurchase({
     scheduledDate: '2026-10-28',
     farmerId: f1.id,
+    rawType: 'POD',
     weightKg: 420,
     pricePerKg: 14,
     notes: 'ผลสดสุกจัด รอบรับซื้อวันอังคาร',
@@ -178,6 +210,7 @@ function seedInitialDataIfEmpty(): void {
   createPurchase({
     scheduledDate: '2026-10-28',
     farmerId: f2.id,
+    rawType: 'POD',
     weightKg: 380,
     pricePerKg: 15,
     notes: 'คัดไซส์ใหญ่ เปลือกบาง',
@@ -185,6 +218,7 @@ function seedInitialDataIfEmpty(): void {
   createPurchase({
     scheduledDate: '2026-11-05',
     farmerId: f3.id,
+    rawType: 'POD',
     weightKg: 510,
     pricePerKg: 14.5,
     notes: 'รับซื้อลานหน้าโรงงาน',
@@ -192,15 +226,24 @@ function seedInitialDataIfEmpty(): void {
   createPurchase({
     scheduledDate: '2026-11-12',
     farmerId: f1.id,
+    rawType: 'POD',
     weightKg: 260,
     pricePerKg: 15,
     notes: 'ผลสดรอบล่าสุด เตรียมเข้าหมัก',
   });
+  createPurchase({
+    scheduledDate: '2026-11-13',
+    farmerId: f2.id,
+    rawType: 'WET_BEAN',
+    weightKg: 85,
+    pricePerKg: 42,
+    notes: 'เมล็ดสดแกะจากสวนแล้ว พร้อมเข้าถังหมัก',
+  });
 
-  // Batch 1: Completed batch with Grade A, B, C and small Bulk dried stock
   const b1 = startBatch({
     startedDate: '2026-10-29',
     freshUsedKg: 600,
+    wetPurchasedUsedKg: 0,
     wetBeanKg: 215,
     processingExpense: 1800,
     notes: 'ถังหมักไม้ 1-2 หมัก 6 วัน พลิกกลับทุก 48 ชม.',
@@ -215,10 +258,10 @@ function seedInitialDataIfEmpty(): void {
     notes: 'ตากแดดโรงเรือน 6 วัน คัดเกรด A/B/C และปัดเมล็ดตกเกรดเป็น Bulk เข้าคลัง',
   });
 
-  // Batch 2: Completed batch with higher Bulk grade after drying
   const b2 = startBatch({
     startedDate: '2026-11-06',
     freshUsedKg: 500,
+    wetPurchasedUsedKg: 0,
     wetBeanKg: 175,
     processingExpense: 1500,
     notes: 'หมักช่วงฝนตก อุณหภูมิถังขึ้นช้า',
@@ -233,16 +276,15 @@ function seedInitialDataIfEmpty(): void {
     notes: 'คัดแยกเมล็ดสีไม่สม่ำเสมอหลังตากแห้งปัดเป็นเกรด Bulk เข้าสต๊อก',
   });
 
-  // Batch 3: Currently fermenting
   startBatch({
     startedDate: '2026-11-14',
     freshUsedKg: 310,
+    wetPurchasedUsedKg: 0,
     wetBeanKg: 112,
     processingExpense: 950,
     notes: 'กำลังหมักวันที่ 2 ในลังไม้หมายเลข 3',
   });
 
-  // Sales Dispatches
   createSale({
     dispatchDate: '2026-11-09',
     customerName: 'บจก. สยามคราฟท์ช็อกโกแลต',
@@ -269,6 +311,8 @@ export function listFarmers(): Farmer[] {
       SELECT f.*,
         COUNT(p.id) as total_purchases,
         COALESCE(SUM(p.weight_kg), 0) as total_weight_kg,
+        COALESCE(SUM(CASE WHEN p.raw_type = 'POD' THEN p.weight_kg ELSE 0 END), 0) as total_pod_kg,
+        COALESCE(SUM(CASE WHEN p.raw_type = 'WET_BEAN' THEN p.weight_kg ELSE 0 END), 0) as total_wet_kg,
         COALESCE(SUM(p.total_cost), 0) as total_spent
       FROM farmers f
       LEFT JOIN fresh_purchases p ON p.farmer_id = f.id
@@ -289,7 +333,11 @@ export function createFarmer(input: { name: string; phone?: string; location?: s
   return db.prepare('SELECT * FROM farmers WHERE id = ?').get(Number(res.lastInsertRowid)) as unknown as Farmer;
 }
 
-export function listPurchases(filters?: { date?: string; farmerId?: number }): FreshPurchase[] {
+export function listPurchases(filters?: {
+  date?: string;
+  farmerId?: number;
+  rawType?: RawMaterialType;
+}): FreshPurchase[] {
   let sql = `
     SELECT p.*, f.name as farmer_name, f.location as farmer_location
     FROM fresh_purchases p
@@ -305,6 +353,10 @@ export function listPurchases(filters?: { date?: string; farmerId?: number }): F
     sql += ' AND p.farmer_id = ?';
     params.push(filters.farmerId);
   }
+  if (filters?.rawType) {
+    sql += ' AND p.raw_type = ?';
+    params.push(filters.rawType);
+  }
   sql += ' ORDER BY p.scheduled_date DESC, p.id DESC';
   return db.prepare(sql).all(...params) as unknown as FreshPurchase[];
 }
@@ -312,10 +364,12 @@ export function listPurchases(filters?: { date?: string; farmerId?: number }): F
 export function createPurchase(input: {
   scheduledDate: string;
   farmerId: number;
+  rawType?: RawMaterialType;
   weightKg: number;
   pricePerKg: number;
   notes?: string;
 }): FreshPurchase {
+  const rawType: RawMaterialType = input.rawType === 'WET_BEAN' ? 'WET_BEAN' : 'POD';
   const weightKg = round2(Number(input.weightKg));
   const pricePerKg = round2(Number(input.pricePerKg));
   if (!input.scheduledDate) throw new Error('กรุณาระบุวันที่มีการกำหนดรับซื้อ');
@@ -330,32 +384,60 @@ export function createPurchase(input: {
     if (!farmer) throw new Error('ไม่พบข้อมูลเกษตรกรที่เลือก');
 
     const totalCost = round2(weightKg * pricePerKg);
-    const code = nextCode('PO', input.scheduledDate, 'fresh_purchases', 'purchase_code');
+    const prefix = rawType === 'WET_BEAN' ? 'WB' : 'PO';
+    const code = nextCode(prefix, input.scheduledDate, 'fresh_purchases', 'purchase_code');
     const createdAt = nowIso();
 
     const res = db
       .prepare(
-        `INSERT INTO fresh_purchases (purchase_code, scheduled_date, farmer_id, weight_kg, price_per_kg, total_cost, notes, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO fresh_purchases (purchase_code, scheduled_date, farmer_id, raw_type, weight_kg, price_per_kg, total_cost, notes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(code, input.scheduledDate, farmer.id, weightKg, pricePerKg, totalCost, (input.notes ?? '').trim(), createdAt);
+      .run(
+        code,
+        input.scheduledDate,
+        farmer.id,
+        rawType,
+        weightKg,
+        pricePerKg,
+        totalCost,
+        (input.notes ?? '').trim(),
+        createdAt
+      );
 
-    db.prepare(
-      `UPDATE stock_state
-       SET fresh_stock_kg = ROUND(fresh_stock_kg + ?, 2),
-           fresh_stock_value = ROUND(fresh_stock_value + ?, 2),
-           updated_at = ?
-       WHERE id = 1`
-    ).run(weightKg, totalCost, createdAt);
+    if (rawType === 'WET_BEAN') {
+      db.prepare(
+        `UPDATE stock_state
+         SET wet_stock_kg = ROUND(wet_stock_kg + ?, 2),
+             wet_stock_value = ROUND(wet_stock_value + ?, 2),
+             updated_at = ?
+         WHERE id = 1`
+      ).run(weightKg, totalCost, createdAt);
+    } else {
+      db.prepare(
+        `UPDATE stock_state
+         SET fresh_stock_kg = ROUND(fresh_stock_kg + ?, 2),
+             fresh_stock_value = ROUND(fresh_stock_value + ?, 2),
+             updated_at = ?
+         WHERE id = 1`
+      ).run(weightKg, totalCost, createdAt);
+    }
+
+    const itemCategory = rawType === 'WET_BEAN' ? 'เมล็ดสด' : 'ผลสด';
+    const titleLabel =
+      rawType === 'WET_BEAN'
+        ? `รับซื้อเมล็ดโกโก้สด (${pricePerKg.toLocaleString('th-TH')} ฿/กก.)`
+        : `รับซื้อผลโกโก้สด (${pricePerKg.toLocaleString('th-TH')} ฿/กก.)`;
 
     db.prepare(
       `INSERT INTO stock_ledger (tx_date, tx_type, ref_code, title, counterparty, item_category, weight_delta_kg, amount_thb, notes, created_at)
-       VALUES (?, 'PURCHASE_FRESH', ?, ?, ?, 'ผลสด', ?, ?, ?, ?)`
+       VALUES (?, 'PURCHASE_FRESH', ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       input.scheduledDate,
       code,
-      `รับซื้อผลโกโก้สด (${pricePerKg.toLocaleString('th-TH')} ฿/กก.)`,
+      titleLabel,
       farmer.name,
+      itemCategory,
       weightKg,
       -totalCost,
       (input.notes ?? '').trim(),
@@ -380,30 +462,45 @@ export function deletePurchase(id: number): void {
       .get(id) as unknown as FreshPurchase | undefined;
     if (!purchase) throw new Error('ไม่พบรายการรับซื้อ');
 
-    const state = getFreshStockState();
-    if (state.fresh_stock_kg + 0.001 < purchase.weight_kg) {
-      throw new Error('ไม่สามารถลบรายการรับซื้อนี้ได้ เนื่องจากผลสดถูกเบิกเข้าหมักแปรรูปไปแล้ว');
+    const state = getRawStockState();
+    const isWet = purchase.raw_type === 'WET_BEAN';
+    const avail = isWet ? state.wet_stock_kg : state.fresh_stock_kg;
+    if (avail + 0.001 < purchase.weight_kg) {
+      throw new Error(
+        `ไม่สามารถลบรายการรับซื้อนี้ได้ เนื่องจาก${isWet ? 'เมล็ดสด' : 'ผลสด'}ถูกเบิกเข้าหมักแปรรูปไปแล้ว`
+      );
     }
 
     const createdAt = nowIso();
-    db.prepare(
-      `UPDATE stock_state
-       SET fresh_stock_kg = MAX(0, ROUND(fresh_stock_kg - ?, 2)),
-           fresh_stock_value = MAX(0, ROUND(fresh_stock_value - ?, 2)),
-           updated_at = ?
-       WHERE id = 1`
-    ).run(purchase.weight_kg, purchase.total_cost, createdAt);
+    if (isWet) {
+      db.prepare(
+        `UPDATE stock_state
+         SET wet_stock_kg = MAX(0, ROUND(wet_stock_kg - ?, 2)),
+             wet_stock_value = MAX(0, ROUND(wet_stock_value - ?, 2)),
+             updated_at = ?
+         WHERE id = 1`
+      ).run(purchase.weight_kg, purchase.total_cost, createdAt);
+    } else {
+      db.prepare(
+        `UPDATE stock_state
+         SET fresh_stock_kg = MAX(0, ROUND(fresh_stock_kg - ?, 2)),
+             fresh_stock_value = MAX(0, ROUND(fresh_stock_value - ?, 2)),
+             updated_at = ?
+         WHERE id = 1`
+      ).run(purchase.weight_kg, purchase.total_cost, createdAt);
+    }
 
     db.prepare('DELETE FROM fresh_purchases WHERE id = ?').run(id);
 
     db.prepare(
       `INSERT INTO stock_ledger (tx_date, tx_type, ref_code, title, counterparty, item_category, weight_delta_kg, amount_thb, notes, created_at)
-       VALUES (?, 'VOID_REVERSAL', ?, ?, ?, 'ผลสด', ?, ?, ?, ?)`
+       VALUES (?, 'VOID_REVERSAL', ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       createdAt.slice(0, 10),
       purchase.purchase_code,
-      'ยกเลิกรายการรับซื้อผลสด',
+      isWet ? 'ยกเลิกรายการรับซื้อเมล็ดสด' : 'ยกเลิกรายการรับซื้อผลสด',
       purchase.farmer_name,
+      isWet ? 'เมล็ดสด' : 'ผลสด',
       -purchase.weight_kg,
       purchase.total_cost,
       'คืนสต๊อกและยอดเงินจากการลบรายการ',
@@ -433,30 +530,46 @@ export function listBatchGradeLots(): BatchGradeLot[] {
 
 export function startBatch(input: {
   startedDate: string;
-  freshUsedKg: number;
+  freshUsedKg?: number;
+  wetPurchasedUsedKg?: number;
   wetBeanKg: number;
   processingExpense?: number;
   notes?: string;
 }): ProcessingBatch {
-  const freshUsedKg = round2(Number(input.freshUsedKg));
+  const freshUsedKg = round2(Number(input.freshUsedKg ?? 0));
+  const wetPurchasedUsedKg = round2(Number(input.wetPurchasedUsedKg ?? 0));
   const wetBeanKg = round2(Number(input.wetBeanKg));
   const processingExpense = round2(Number(input.processingExpense ?? 0));
 
   if (!input.startedDate) throw new Error('กรุณาระบุวันที่เริ่มแปรรูป');
-  if (!(freshUsedKg > 0)) throw new Error('น้ำหนักผลสดที่เบิกใช้ต้องมากกว่า 0 กก.');
-  if (!(wetBeanKg > 0)) throw new Error('น้ำหนักเมล็ดสดเตรียมหมักต้องมากกว่า 0 กก.');
+  if (freshUsedKg < 0 || wetPurchasedUsedKg < 0) throw new Error('น้ำหนักที่เบิกใช้ต้องไม่ติดลบ');
+  if (freshUsedKg <= 0 && wetPurchasedUsedKg <= 0) {
+    throw new Error('กรุณาระบุน้ำหนักผลสด หรือ เมล็ดสดที่เบิกใช้เข้าหมักอย่างน้อย 1 รายการ');
+  }
+  if (!(wetBeanKg > 0)) throw new Error('น้ำหนักเมล็ดสดรวมที่เข้าถังหมักต้องมากกว่า 0 กก.');
   if (processingExpense < 0) throw new Error('ค่าใช้จ่ายแปรรูปต้องไม่ติดลบ');
 
   return withTransaction(() => {
-    const state = getFreshStockState();
-    if (state.fresh_stock_kg + 0.001 < freshUsedKg) {
+    const state = getRawStockState();
+    if (freshUsedKg > 0 && state.fresh_stock_kg + 0.001 < freshUsedKg) {
       throw new Error(
         `สต๊อกผลสดคงเหลือไม่เพียงพอ (คงเหลือ ${state.fresh_stock_kg.toLocaleString('th-TH')} กก. แต่ต้องการเบิก ${freshUsedKg.toLocaleString('th-TH')} กก.)`
       );
     }
+    if (wetPurchasedUsedKg > 0 && state.wet_stock_kg + 0.001 < wetPurchasedUsedKg) {
+      throw new Error(
+        `สต๊อกเมล็ดสดคงเหลือไม่เพียงพอ (คงเหลือ ${state.wet_stock_kg.toLocaleString('th-TH')} กก. แต่ต้องการเบิก ${wetPurchasedUsedKg.toLocaleString('th-TH')} กก.)`
+      );
+    }
 
     const avgFreshCost = state.fresh_stock_kg > 0 ? state.fresh_stock_value / state.fresh_stock_kg : 0;
-    const freshCostAllocated = round2(Math.min(state.fresh_stock_value, freshUsedKg * avgFreshCost));
+    const freshCostAllocated =
+      freshUsedKg > 0 ? round2(Math.min(state.fresh_stock_value, freshUsedKg * avgFreshCost)) : 0;
+
+    const avgWetCost = state.wet_stock_kg > 0 ? state.wet_stock_value / state.wet_stock_kg : 0;
+    const wetCostAllocated =
+      wetPurchasedUsedKg > 0 ? round2(Math.min(state.wet_stock_value, wetPurchasedUsedKg * avgWetCost)) : 0;
+
     const createdAt = nowIso();
     const batchCode = nextCode('BATCH', input.startedDate, 'processing_batches', 'batch_code');
 
@@ -464,41 +577,63 @@ export function startBatch(input: {
       `UPDATE stock_state
        SET fresh_stock_kg = MAX(0, ROUND(fresh_stock_kg - ?, 2)),
            fresh_stock_value = MAX(0, ROUND(fresh_stock_value - ?, 2)),
+           wet_stock_kg = MAX(0, ROUND(wet_stock_kg - ?, 2)),
+           wet_stock_value = MAX(0, ROUND(wet_stock_value - ?, 2)),
            updated_at = ?
        WHERE id = 1`
-    ).run(freshUsedKg, freshCostAllocated, createdAt);
+    ).run(freshUsedKg, freshCostAllocated, wetPurchasedUsedKg, wetCostAllocated, createdAt);
 
     const res = db
       .prepare(
         `INSERT INTO processing_batches (
           batch_code, started_date, status, fresh_used_kg, fresh_cost_allocated,
-          wet_bean_kg, processing_expense, notes, created_at
-        ) VALUES (?, ?, 'fermenting', ?, ?, ?, ?, ?, ?)`
+          wet_purchased_used_kg, wet_cost_allocated, wet_bean_kg, processing_expense, notes, created_at
+        ) VALUES (?, ?, 'fermenting', ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         batchCode,
         input.startedDate,
         freshUsedKg,
         freshCostAllocated,
+        wetPurchasedUsedKg,
+        wetCostAllocated,
         wetBeanKg,
         processingExpense,
         (input.notes ?? '').trim(),
         createdAt
       );
 
-    db.prepare(
-      `INSERT INTO stock_ledger (tx_date, tx_type, ref_code, title, counterparty, item_category, weight_delta_kg, amount_thb, notes, created_at)
-       VALUES (?, 'START_FERMENT', ?, ?, ?, 'ผลสด (ตัดเบิกเข้าหมัก)', ?, ?, ?, ?)`
-    ).run(
-      input.startedDate,
-      batchCode,
-      `ตัดสต๊อกผลสดเข้าหมัก -> เมล็ดสด ${wetBeanKg.toLocaleString('th-TH')} กก.`,
-      batchCode,
-      -freshUsedKg,
-      -processingExpense,
-      (input.notes ?? '').trim(),
-      createdAt
-    );
+    if (freshUsedKg > 0) {
+      db.prepare(
+        `INSERT INTO stock_ledger (tx_date, tx_type, ref_code, title, counterparty, item_category, weight_delta_kg, amount_thb, notes, created_at)
+         VALUES (?, 'START_FERMENT', ?, ?, ?, 'ผลสด (ตัดเบิกเข้าหมัก)', ?, ?, ?, ?)`
+      ).run(
+        input.startedDate,
+        batchCode,
+        `ตัดสต๊อกผลสดเข้าหมัก -> เมล็ดรวม ${wetBeanKg.toLocaleString('th-TH')} กก.`,
+        batchCode,
+        -freshUsedKg,
+        wetPurchasedUsedKg > 0 ? 0 : -processingExpense,
+        (input.notes ?? '').trim(),
+        createdAt
+      );
+    }
+
+    if (wetPurchasedUsedKg > 0) {
+      db.prepare(
+        `INSERT INTO stock_ledger (tx_date, tx_type, ref_code, title, counterparty, item_category, weight_delta_kg, amount_thb, notes, created_at)
+         VALUES (?, 'START_FERMENT', ?, ?, ?, 'เมล็ดสด (ตัดเบิกเข้าหมัก)', ?, ?, ?, ?)`
+      ).run(
+        input.startedDate,
+        batchCode,
+        `ตัดสต๊อกเมล็ดสดเข้าหมัก -> เมล็ดรวม ${wetBeanKg.toLocaleString('th-TH')} กก.`,
+        batchCode,
+        -wetPurchasedUsedKg,
+        -processingExpense,
+        (input.notes ?? '').trim(),
+        createdAt
+      );
+    }
 
     return db
       .prepare('SELECT * FROM processing_batches WHERE id = ?')
@@ -541,7 +676,9 @@ export function completeBatch(
     if (batch.status === 'completed') throw new Error('รอบการผลิตนี้ปิดยอดและคัดเกรดไปแล้ว');
 
     const totalProcessingExpense = round2(batch.processing_expense + extraExpense);
-    const totalBatchCost = round2(batch.fresh_cost_allocated + totalProcessingExpense);
+    const totalBatchCost = round2(
+      batch.fresh_cost_allocated + (batch.wet_cost_allocated ?? 0) + totalProcessingExpense
+    );
 
     const costPerDriedKg = round2(totalBatchCost / driedTotalKg);
     const bulkAllocatedCost = round2(gradeBulkKg * costPerDriedKg);
@@ -660,7 +797,6 @@ export function createSale(input: {
       cost_per_kg: number;
     }>;
 
-    // If user chose a specific graded batch lot to deduct from, prioritize or filter it
     if (input.preferredBatchId) {
       const targetRow = availRows.find((r) => r.batch_id === input.preferredBatchId);
       if (!targetRow) {
@@ -822,14 +958,15 @@ export function listLedger(filters?: { txType?: string; search?: string; from?: 
 }
 
 export function getDashboardSummary(): DashboardSummary {
-  const state = getFreshStockState();
+  const state = getRawStockState();
   const avgFreshCost = state.fresh_stock_kg > 0 ? round2(state.fresh_stock_value / state.fresh_stock_kg) : 0;
+  const avgWetCost = state.wet_stock_kg > 0 ? round2(state.wet_stock_value / state.wet_stock_kg) : 0;
 
   const fermAgg = db
     .prepare(
       `SELECT COUNT(*) as cnt,
               COALESCE(SUM(wet_bean_kg), 0) as wet_kg,
-              COALESCE(SUM(fresh_cost_allocated + processing_expense), 0) as cost_val
+              COALESCE(SUM(fresh_cost_allocated + wet_cost_allocated + processing_expense), 0) as cost_val
        FROM processing_batches WHERE status = 'fermenting'`
     )
     .get() as { cnt: number; wet_kg: number; cost_val: number };
@@ -924,18 +1061,17 @@ export function getDashboardSummary(): DashboardSummary {
     const entry = batchRemMap.get(r.batch_id) ?? { A: 0, B: 0, C: 0, BULK: 0, bulkVal: 0, val: 0 };
     entry[r.grade] = round2(entry[r.grade] + r.remaining_kg);
     const rowVal = r.remaining_kg * r.cost_per_kg;
-    if (r.grade === 'BULK') {
-      entry.bulkVal = round2(entry.bulkVal + rowVal);
-    }
+    if (r.grade === 'BULK') entry.bulkVal = round2(entry.bulkVal + rowVal);
     entry.val = round2(entry.val + rowVal);
     batchRemMap.set(r.batch_id, entry);
   }
 
   const batchAnalytics: BatchAnalyticsRow[] = batches.map((b) => {
-    const totalCost = round2(b.fresh_cost_allocated + b.processing_expense);
+    const totalCost = round2(b.fresh_cost_allocated + (b.wet_cost_allocated ?? 0) + b.processing_expense);
     const salesInfo = batchSalesMap.get(b.id) ?? { soldKg: 0, revenue: 0, cogs: 0 };
     const remInfo = batchRemMap.get(b.id) ?? { A: 0, B: 0, C: 0, BULK: 0, bulkVal: 0, val: 0 };
-    const yieldPct = b.fresh_used_kg > 0 ? round2((b.dried_total_kg / b.fresh_used_kg) * 100) : 0;
+    const baseInputKg = b.fresh_used_kg > 0 ? b.fresh_used_kg + (b.wet_purchased_used_kg ?? 0) : b.wet_bean_kg;
+    const yieldPct = baseInputKg > 0 ? round2((b.dried_total_kg / baseInputKg) * 100) : 0;
     const realizedPnl = round2(salesInfo.revenue - salesInfo.cogs - remInfo.bulkVal);
     const netCycleBalance = round2(salesInfo.revenue - totalCost);
 
@@ -946,6 +1082,7 @@ export function getDashboardSummary(): DashboardSummary {
       completed_date: b.completed_date,
       status: b.status,
       fresh_used_kg: b.fresh_used_kg,
+      wet_purchased_used_kg: b.wet_purchased_used_kg ?? 0,
       wet_bean_kg: b.wet_bean_kg,
       dried_total_kg: b.dried_total_kg,
       yield_percent: yieldPct,
@@ -968,13 +1105,15 @@ export function getDashboardSummary(): DashboardSummary {
     };
   });
 
-  // Net profit after deducting cost tied up in unsold BULK stock (avoids double-counting once BULK is sold/disposed)
   const netOperatingProfit = round2(salesAgg.gp - gradeStocks.BULK.stock_value);
 
   return {
     fresh_stock_kg: round2(state.fresh_stock_kg),
     fresh_stock_value: round2(state.fresh_stock_value),
     avg_fresh_cost_per_kg: avgFreshCost,
+    wet_stock_kg: round2(state.wet_stock_kg),
+    wet_stock_value: round2(state.wet_stock_value),
+    avg_wet_cost_per_kg: avgWetCost,
     fermenting_batch_count: fermAgg.cnt,
     fermenting_wet_kg: round2(fermAgg.wet_kg),
     fermenting_cost_value: round2(fermAgg.cost_val),
@@ -992,9 +1131,13 @@ export function getDashboardSummary(): DashboardSummary {
       total_sales_kg: round2(salesAgg.kg),
       total_sales_revenue: round2(salesAgg.rev),
       total_cogs: round2(salesAgg.cogs),
-      total_gross_profit: round2(salesAgg.gp),
+      total_gross_profit: round2(gpValue(salesAgg.gp)),
       net_operating_profit: netOperatingProfit,
     },
     batch_analytics: batchAnalytics,
   };
+}
+
+function gpValue(v: number): number {
+  return v;
 }

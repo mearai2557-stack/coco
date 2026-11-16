@@ -9,6 +9,7 @@ interface ProcessingViewProps {
   onStartBatch: (data: {
     startedDate: string;
     freshUsedKg: number;
+    wetPurchasedUsedKg: number;
     wetBeanKg: number;
     processingExpense: number;
     notes: string;
@@ -35,7 +36,9 @@ export function ProcessingView({
 }: ProcessingViewProps) {
   const [startedDate, setStartedDate] = useState(todayIso());
   const [freshUsedKg, setFreshUsedKg] = useState('');
+  const [wetPurchasedUsedKg, setWetPurchasedUsedKg] = useState('');
   const [wetBeanKg, setWetBeanKg] = useState('');
+  const [wetBeanTouched, setWetBeanTouched] = useState(false);
   const [processingExpense, setProcessingExpense] = useState('0');
   const [startNotes, setStartNotes] = useState('');
   const [starting, setStarting] = useState(false);
@@ -53,9 +56,15 @@ export function ProcessingView({
   const [statusFilter, setStatusFilter] = useState<'fermenting' | 'completed' | 'all'>('all');
 
   const freshInputNum = Number(freshUsedKg) || 0;
+  const wetInputNum = Number(wetPurchasedUsedKg) || 0;
   const freshAvailable = summary.fresh_stock_kg;
+  const wetAvailable = summary.wet_stock_kg;
+
   const freshInsufficient = freshInputNum > freshAvailable + 0.001;
-  const estFreshCostAllocated = freshInputNum * summary.avg_fresh_cost_per_kg;
+  const wetInsufficient = wetInputNum > wetAvailable + 0.001;
+
+  const estRawCostAllocated =
+    freshInputNum * summary.avg_fresh_cost_per_kg + wetInputNum * summary.avg_wet_cost_per_kg;
 
   const fermentingBatches = batches.filter((b) => b.status === 'fermenting');
   const completedBatches = batches.filter((b) => b.status === 'completed');
@@ -65,20 +74,31 @@ export function ProcessingView({
     return b.status === statusFilter;
   });
 
+  const handleWetPurchasedChange = (val: string) => {
+    setWetPurchasedUsedKg(val);
+    if (!wetBeanTouched && (Number(freshUsedKg) || 0) === 0) {
+      setWetBeanKg(val);
+    }
+  };
+
   const handleStartSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (freshInsufficient) return;
+    if (freshInsufficient || wetInsufficient) return;
+    if (freshInputNum <= 0 && wetInputNum <= 0) return;
     setStarting(true);
     try {
       await onStartBatch({
         startedDate,
-        freshUsedKg: Number(freshUsedKg),
+        freshUsedKg: freshInputNum,
+        wetPurchasedUsedKg: wetInputNum,
         wetBeanKg: Number(wetBeanKg),
         processingExpense: Number(processingExpense) || 0,
         notes: startNotes,
       });
       setFreshUsedKg('');
+      setWetPurchasedUsedKg('');
       setWetBeanKg('');
+      setWetBeanTouched(false);
       setProcessingExpense('0');
       setStartNotes('');
     } finally {
@@ -124,6 +144,7 @@ export function ProcessingView({
   const previewDriedTotal = previewA + previewB + previewC + previewBulk;
   const previewTotalCost = completingBatch
     ? completingBatch.fresh_cost_allocated +
+      (completingBatch.wet_cost_allocated ?? 0) +
       completingBatch.processing_expense +
       (Number(extraExpense) || 0)
     : 0;
@@ -153,9 +174,12 @@ export function ProcessingView({
                   ปิดรอบหมัก & ตากแห้งคัดเกรด · {completingBatch.batch_code}
                 </h2>
                 <p className="text-xs text-[#57534E] mt-0.5 font-mono tabular-nums">
-                  ผลสดที่ใช้ {formatKg(completingBatch.fresh_used_kg)} → เมล็ดสดหมัก{' '}
-                  {formatKg(completingBatch.wet_bean_kg)} · ทุนสะสม{' '}
-                  {formatThb(completingBatch.fresh_cost_allocated + completingBatch.processing_expense)}
+                  เมล็ดหมักรวม {formatKg(completingBatch.wet_bean_kg)} · ทุนสะสม{' '}
+                  {formatThb(
+                    completingBatch.fresh_cost_allocated +
+                      (completingBatch.wet_cost_allocated ?? 0) +
+                      completingBatch.processing_expense
+                  )}
                 </p>
               </div>
               <button
@@ -266,7 +290,7 @@ export function ProcessingView({
 
               <div className="p-3 rounded-lg bg-[#FEF2F2]/50 border border-[#FECACA] text-[11px] text-[#991B1B] flex items-center justify-between gap-2">
                 <span>
-                  เมล็ดที่หมักแล้วปัดเป็น <strong>เกรด Bulk</strong> จะถูกนำเข้าสต๊อกเป็นเกรด Bulk หลังตากแห้ง (เพื่อติดตามต้นทุนที่จมหรือตัดขาย/ตัดทิ้งในหน้าจ่ายสินค้า)
+                  เมล็ดที่หมักแล้วปัดเป็น <strong>เกรด Bulk</strong> จะถูกนำเข้าสต๊อกเป็นเกรด Bulk หลังตากแห้ง
                 </span>
                 <span className="font-mono font-semibold whitespace-nowrap">
                   {formatThb(previewBulkCost)}
@@ -289,11 +313,15 @@ export function ProcessingView({
 
             <div className="p-3.5 rounded-lg bg-[#FAFAF8] border border-[#E5E5E0] flex flex-wrap items-center justify-between gap-2 text-xs">
               <div>
-                <span className="text-[#57534E]">Yield เทียบผลสด: </span>
+                <span className="text-[#57534E]">Yield เทียบวัตถุดิบ: </span>
                 <span className="font-mono font-semibold text-[#1C1917]">
-                  {completingBatch.fresh_used_kg > 0
-                    ? ((previewDriedTotal / completingBatch.fresh_used_kg) * 100).toFixed(1)
-                    : '0.0'}
+                  {(() => {
+                    const base =
+                      completingBatch.fresh_used_kg > 0
+                        ? completingBatch.fresh_used_kg + (completingBatch.wet_purchased_used_kg ?? 0)
+                        : completingBatch.wet_bean_kg;
+                    return base > 0 ? ((previewDriedTotal / base) * 100).toFixed(1) : '0.0';
+                  })()}
                   %
                 </span>
               </div>
@@ -325,18 +353,26 @@ export function ProcessingView({
         >
           <div>
             <h2 className="text-base font-semibold text-[#1C1917]">
-              ขั้นที่ 1: เบิกผลสดเข้าหมัก (ตัดสต๊อกอัตโนมัติ)
+              ขั้นที่ 1: เบิกวัตถุดิบเข้าหมัก (ตัดสต๊อกอัตโนมัติ)
             </h2>
             <p className="text-xs text-[#57534E] mt-0.5">
-              ระบบจะตัดยอดผลโกโก้สดคงเหลือทันทีและบันทึกน้ำหนักเมล็ดเตรียมหมัก
+              เบิกได้ทั้ง "ผลสด" และ/หรือ "เมล็ดสด" ที่รับซื้อไว้เพื่อส่งเข้าถังหมัก
             </p>
           </div>
 
-          <div className="p-3.5 rounded-lg bg-[#FAFAF8] border border-[#E5E5E0] flex items-center justify-between">
-            <span className="text-xs text-[#57534E]">ผลสดคงเหลือพร้อมเบิก</span>
-            <span className="font-mono tabular-nums font-bold text-sm text-[#1C1917]">
-              {formatKg(freshAvailable)}
-            </span>
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="p-3 rounded-lg bg-[#FAFAF8] border border-[#E5E5E0]">
+              <div className="text-[11px] text-[#57534E]">ผลสดคงเหลือ</div>
+              <div className="font-mono tabular-nums font-bold text-sm text-[#1C1917] mt-0.5">
+                {formatKg(freshAvailable)}
+              </div>
+            </div>
+            <div className="p-3 rounded-lg bg-[#FAFAF8] border border-[#E5E5E0]">
+              <div className="text-[11px] text-[#57534E]">เมล็ดสดคงเหลือ</div>
+              <div className="font-mono tabular-nums font-bold text-sm text-[#9A4A18] mt-0.5">
+                {formatKg(wetAvailable)}
+              </div>
+            </div>
           </div>
 
           <div>
@@ -353,13 +389,12 @@ export function ProcessingView({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-[#57534E] mb-1">
-                ผลสดที่เบิกใช้ (กก.)
+                เบิกผลสด (กก.)
               </label>
               <input
                 type="number"
                 step="0.01"
-                min="0.01"
-                required
+                min="0"
                 inputMode="decimal"
                 value={freshUsedKg}
                 onChange={(e) => setFreshUsedKg(e.target.value)}
@@ -371,27 +406,50 @@ export function ProcessingView({
             </div>
             <div>
               <label className="block text-xs font-medium text-[#57534E] mb-1">
-                เมล็ดสดเตรียมหมัก (กก.)
+                เบิกเมล็ดสดที่ซื้อไว้ (กก.)
               </label>
               <input
                 type="number"
                 step="0.01"
-                min="0.01"
-                required
+                min="0"
                 inputMode="decimal"
-                value={wetBeanKg}
-                onChange={(e) => setWetBeanKg(e.target.value)}
+                value={wetPurchasedUsedKg}
+                onChange={(e) => handleWetPurchasedChange(e.target.value)}
                 placeholder="0.0"
-                className="w-full min-h-[44px] px-3 rounded-lg border border-[#E5E5E0] bg-[#FAFAF8] text-sm font-mono tabular-nums"
+                className={`w-full min-h-[44px] px-3 rounded-lg border text-sm font-mono tabular-nums bg-[#FAFAF8] ${
+                  wetInsufficient ? 'border-[#DC2626] text-[#DC2626]' : 'border-[#E5E5E0]'
+                }`}
               />
             </div>
           </div>
 
-          {freshInsufficient && (
+          {(freshInsufficient || wetInsufficient) && (
             <p className="text-xs text-[#DC2626] font-medium">
-              น้ำหนักเบิกเกินสต๊อกผลสดคงเหลือ ({formatKg(freshAvailable)})
+              {freshInsufficient
+                ? `น้ำหนักเบิกผลสดเกินสต๊อกคงเหลือ (${formatKg(freshAvailable)})`
+                : `น้ำหนักเบิกเมล็ดสดเกินสต๊อกคงเหลือ (${formatKg(wetAvailable)})`}
             </p>
           )}
+
+          <div>
+            <label className="block text-xs font-medium text-[#57534E] mb-1">
+              น้ำหนักเมล็ดสดรวมที่เข้าถังหมักจริง (กก.) *
+            </label>
+            <input
+              type="number"
+              step="0.01"
+              min="0.01"
+              required
+              inputMode="decimal"
+              value={wetBeanKg}
+              onChange={(e) => {
+                setWetBeanKg(e.target.value);
+                setWetBeanTouched(true);
+              }}
+              placeholder="เช่น เมล็ดที่ได้จากผลสด + เมล็ดสดที่เบิก"
+              className="w-full min-h-[44px] px-3 rounded-lg border border-[#E5E5E0] bg-[#FAFAF8] text-sm font-mono tabular-nums"
+            />
+          </div>
 
           <div>
             <label className="block text-xs font-medium text-[#57534E] mb-1">
@@ -422,19 +480,24 @@ export function ProcessingView({
           </div>
 
           <div className="p-3 rounded-lg bg-[#FAFAF8] border border-[#E5E5E0] text-xs flex items-center justify-between">
-            <span className="text-[#57534E]">ต้นทุนผลสดที่ตัดเข้าหมัก</span>
+            <span className="text-[#57534E]">ต้นทุนวัตถุดิบสดที่ตัดเข้าหมัก</span>
             <span className="font-mono tabular-nums font-semibold text-[#1C1917]">
-              {formatThb(estFreshCostAllocated)}
+              {formatThb(estRawCostAllocated)}
             </span>
           </div>
 
           <button
             type="submit"
-            disabled={starting || freshInsufficient || freshAvailable <= 0}
+            disabled={
+              starting ||
+              freshInsufficient ||
+              wetInsufficient ||
+              (freshInputNum <= 0 && wetInputNum <= 0)
+            }
             className="w-full min-h-[48px] px-4 py-2.5 rounded-lg bg-[#9A4A18] hover:bg-[#7C360D] text-white text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-50"
           >
             <Flame className="w-4 h-4" />
-            <span>{starting ? 'กำลังตัดสต๊อก...' : 'เปิดรอบหมัก & ตัดสต๊อกผลสด'}</span>
+            <span>{starting ? 'กำลังตัดสต๊อก...' : 'เปิดรอบหมัก & ตัดสต๊อกวัตถุดิบ'}</span>
           </button>
         </form>
 
@@ -477,7 +540,10 @@ export function ProcessingView({
                 </div>
               ) : (
                 visibleBatches.map((batch) => {
-                  const totalCost = batch.fresh_cost_allocated + batch.processing_expense;
+                  const totalCost =
+                    batch.fresh_cost_allocated +
+                    (batch.wet_cost_allocated ?? 0) +
+                    batch.processing_expense;
                   return (
                     <div key={batch.id} className="p-4 sm:p-5 space-y-3">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -518,9 +584,14 @@ export function ProcessingView({
 
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 text-xs">
                         <div className="p-2.5 rounded-lg bg-[#FAFAF8] border border-[#E5E5E0]">
-                          <div className="text-[#78716C]">ผลสดใช้ / เมล็ดหมัก</div>
+                          <div className="text-[#78716C]">วัตถุดิบ → เมล็ดเข้าหมัก</div>
                           <div className="font-mono tabular-nums font-semibold text-[#1C1917] mt-0.5">
-                            {batch.fresh_used_kg} → {batch.wet_bean_kg} กก.
+                            {batch.fresh_used_kg > 0 ? `ผล ${batch.fresh_used_kg}` : ''}
+                            {batch.fresh_used_kg > 0 && (batch.wet_purchased_used_kg ?? 0) > 0 ? ' + ' : ''}
+                            {(batch.wet_purchased_used_kg ?? 0) > 0
+                              ? `เมล็ด ${batch.wet_purchased_used_kg}`
+                              : ''}{' '}
+                            → {batch.wet_bean_kg} กก.
                           </div>
                         </div>
 

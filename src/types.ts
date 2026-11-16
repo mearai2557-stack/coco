@@ -1,5 +1,7 @@
 export type CocoaGrade = 'A' | 'B' | 'C' | 'BULK';
 
+export type RawMaterialType = 'POD' | 'WET_BEAN';
+
 export type LedgerTxType =
   | 'PURCHASE_FRESH'
   | 'START_FERMENT'
@@ -16,6 +18,8 @@ export interface Farmer {
   created_at: string;
   total_purchases?: number;
   total_weight_kg?: number;
+  total_pod_kg?: number;
+  total_wet_kg?: number;
   total_spent?: number;
 }
 
@@ -26,6 +30,7 @@ export interface FreshPurchase {
   farmer_id: number;
   farmer_name: string;
   farmer_location?: string;
+  raw_type: RawMaterialType;
   weight_kg: number;
   price_per_kg: number;
   total_cost: number;
@@ -41,6 +46,8 @@ export interface ProcessingBatch {
   status: 'fermenting' | 'completed';
   fresh_used_kg: number;
   fresh_cost_allocated: number;
+  wet_purchased_used_kg: number;
+  wet_cost_allocated: number;
   wet_bean_kg: number;
   processing_expense: number;
   bulk_loss_kg: number;
@@ -118,6 +125,7 @@ export interface BatchAnalyticsRow {
   completed_date: string | null;
   status: 'fermenting' | 'completed';
   fresh_used_kg: number;
+  wet_purchased_used_kg: number;
   wet_bean_kg: number;
   dried_total_kg: number;
   yield_percent: number;
@@ -143,6 +151,9 @@ export interface DashboardSummary {
   fresh_stock_kg: number;
   fresh_stock_value: number;
   avg_fresh_cost_per_kg: number;
+  wet_stock_kg: number;
+  wet_stock_value: number;
+  avg_wet_cost_per_kg: number;
   fermenting_batch_count: number;
   fermenting_wet_kg: number;
   fermenting_cost_value: number;
