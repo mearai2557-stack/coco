@@ -1,9 +1,15 @@
 name = "cacaoflow-inventory"
+main = "worker/index.ts"
 compatibility_date = "2026-01-01"
-pages_build_output_dir = "dist"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
 
 [[d1_databases]]
 binding = "DB"
 database_name = "cacaoflow_db"
-database_id = "REPLACE_WITH_YOUR_CLOUDFLARE_D1_DATABASE_ID"
+database_id = "55341472-5757-4b2f-b926-6f18d7955fe5"
 migrations_dir = "migrations"
